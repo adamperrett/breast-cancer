@@ -1,13 +1,11 @@
 import os
 import random
-import shutil
-from glob import glob
+import glob
 
-import cv2
+import pydicom
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pydicom
 import seaborn as sns
 from colorama import Fore, Style
 from mpl_toolkits.axes_grid1 import ImageGrid
@@ -17,22 +15,23 @@ from tqdm import tqdm
 sns.set(style='dark')
 
 # Paths and Dataframe
-dataset_dir = '/kaggle/input/cbis-ddsm-breast-cancer-image-dataset'
-df = pd.read_csv(f'{dataset_dir}/csv/dicom_info.csv')
-df['image_path'] = df['image_path'].apply(lambda x: x.replace('CBIS-DDSM', dataset_dir))
+parent_directory = 'data/procas_raw_sample'  # Update this path to your parent directory
 
+# Glob for .dcm files recursively within subfolders containing "PROCAS" in the filename
+image_paths = glob.glob(os.path.join(parent_directory, '*/*PROCAS*.dcm'))
 
-def show_img(path):
-    img = pydicom.dcmread(path).pixel_array
-    plt.figure(figsize=(10, 10))
-    plt.imshow(img, cmap='bone')
-    plt.show()
+df = pd.DataFrame({'image_path': image_paths})
 
-
-show_img(df['image_path'].iloc[10])
+# def show_img(path):
+#     data = pydicom.dcmread(path).pixel_array
+#     plt.figure(figsize=(10, 10))
+#     plt.imshow(data, cmap='bone')
+#     plt.show()
+#
+# show_img(df['image_path'].iloc[10])
 
 # Image Sizes
-data = df['image_path'].map(lambda path: pydicom.dcmread(path).pixel_array.shape)
+data = [pydicom.dcmread(path).pixel_array.shape for path in df['image_path']]
 df['height'], df['width'] = zip(*data)
 
 # KDE Plots
@@ -51,20 +50,13 @@ plt.figure(figsize=(10, 10))
 plt.scatter(x_val, y_val, c=z, s=100, cmap='viridis')
 plt.show()
 
-# Display info
+# Display first row info
 for info in zip(df.iloc[0].index, df.iloc[0]):
     print(f'{Fore.GREEN}{info[0]}{Style.RESET_ALL}:', info[1])
 
-# Bar plot
-plt.figure(figsize=(12, 8))
-sns.barplot(df['SeriesDescription'].value_counts(dropna=False).index,
-            df['SeriesDescription'].value_counts(dropna=False), palette='viridis')
-plt.show()
-
-
 def show_grid(files, row=3, col=3):
     grid_files = random.sample(files, row * col)
-    images = [cv2.resize(pydicom.dcmread(image_path).pixel_array, dsize=(512, 512)) for image_path in tqdm(grid_files)]
+    images = [pydicom.dcmread(image_path).pixel_array for image_path in tqdm(grid_files)]
 
     fig = plt.figure(figsize=(col * 5, row * 5))
     grid = ImageGrid(fig, 111, nrows_ncols=(col, row), axes_pad=0.05)
@@ -75,6 +67,5 @@ def show_grid(files, row=3, col=3):
         ax.set_yticks([])
     plt.show()
 
-
-show_grid(df[df['SeriesDescription'] == 'cropped images']['image_path'].tolist(), row=4)
-show_grid(df[df['SeriesDescription'] == 'full mammogram images']['image_path'].tolist(), row=4)
+# This will show grid images (you can choose a filter if needed)
+show_grid(df['image_path'].tolist(), row=4)
