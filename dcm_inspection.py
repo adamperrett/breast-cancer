@@ -1,71 +1,79 @@
 import os
 import random
 import glob
+import re
 
 import pydicom
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from colorama import Fore, Style
-from mpl_toolkits.axes_grid1 import ImageGrid
 from scipy.stats import gaussian_kde
-from tqdm import tqdm
 
 sns.set(style='dark')
 
-# Paths and Dataframe
-parent_directory = 'data/procas_raw_sample'  # Update this path to your parent directory
-
-# Glob for .dcm files recursively within subfolders containing "PROCAS" in the filename
+# parent_directory = 'data/procas_processed_sample'
+parent_directory = 'data/procas_raw_sample'
 image_paths = glob.glob(os.path.join(parent_directory, '*/*PROCAS*.dcm'))
-
 df = pd.DataFrame({'image_path': image_paths})
 
-# def show_img(path):
-#     data = pydicom.dcmread(path).pixel_array
-#     plt.figure(figsize=(10, 10))
-#     plt.imshow(data, cmap='bone')
-#     plt.show()
-#
-# show_img(df['image_path'].iloc[10])
+def extract_identifier(filename):
+    match = re.search(r'-([\d]+)-[A-Z]+', filename)
+    return match.group(1) if match else None
 
-# Image Sizes
-data = [pydicom.dcmread(path).pixel_array.shape for path in df['image_path']]
+
+df['identifier'] = df['image_path'].apply(lambda x: extract_identifier(os.path.basename(x)))
+
+data = []
+for path in df['image_path']:
+    dicom_data = pydicom.dcmread(path, force=True)
+    if hasattr(dicom_data, 'pixel_array'):
+        data.append(dicom_data.pixel_array.shape)
+    else:
+        print(f"Skipped {path} due to missing pixel data")
+        df = df[df.image_path != path]
+
 df['height'], df['width'] = zip(*data)
 
-# KDE Plots
-plt.figure(figsize=(12, 8))
-sns.kdeplot(df['width'], shade=True, color='limegreen')
-sns.kdeplot(df['height'], shade=True, color='gold')
-plt.legend(['width', 'height'])
+views = ["LCC", "LMLO", "RMLO", "RCC"]
+
+plt.figure(figsize=(16, 12))
+for view in views:
+    df_view = df[df['image_path'].str.contains(view)]
+    sns.kdeplot(df_view['width'], shade=True, label=f'{view} Width')
+    sns.kdeplot(df_view['height'], shade=True, label=f'{view} Height')
+plt.legend()
 plt.show()
 
-# Scatter plot with densities
-x_val, y_val = df['width'].values, df['height'].values
-xy = np.vstack([x_val, y_val])
-z = gaussian_kde(xy)(xy)
+plt.figure(figsize=(16, 12))
+colors = ['limegreen', 'gold', 'cyan', 'magenta']
+markers = ['o', 's', '^', 'D']
 
-plt.figure(figsize=(10, 10))
-plt.scatter(x_val, y_val, c=z, s=100, cmap='viridis')
+for idx, view in enumerate(views):
+    df_view = df[df['image_path'].str.contains(view)]
+    x_val, y_val = df_view['width'].values, df_view['height'].values
+    plt.scatter(x_val, y_val, c=colors[idx], s=100, label=f'{view}', alpha=0.6, marker=markers[idx])
+plt.legend()
 plt.show()
 
-# Display first row info
-for info in zip(df.iloc[0].index, df.iloc[0]):
-    print(f'{Fore.GREEN}{info[0]}{Style.RESET_ALL}:', info[1])
+# Sample 4 random identifiers and display all views of those subjects
+chosen_identifiers = random.sample(list(df['identifier'].unique()), 4)
+dfs = [[df[(df['identifier'] == identifier) & (df['image_path'].str.contains(view))] for view in views] for identifier in chosen_identifiers]
 
-def show_grid(files, row=3, col=3):
-    grid_files = random.sample(files, row * col)
-    images = [pydicom.dcmread(image_path).pixel_array for image_path in tqdm(grid_files)]
+fig, axes = plt.subplots(4, len(views), figsize=(15, 15))
+for row, identifier_dfs in enumerate(dfs):
+    for idx, view in enumerate(views):
+        if not identifier_dfs[idx].empty:
+            path = identifier_dfs[idx]['image_path'].iloc[0]
+            dicom_data = pydicom.dcmread(path, force=True)
+            if hasattr(dicom_data, 'pixel_array'):
+                axes[row, idx].imshow(dicom_data.pixel_array, cmap='gray')
+        axes[row, idx].set_xticks([])
+        axes[row, idx].set_yticks([])
+        if row == 0:
+            axes[row, idx].set_title(f'{view}')
+        if idx == 0:
+            axes[row, idx].set_ylabel(f'ID: {chosen_identifiers[row]}', rotation=0, labelpad=50, verticalalignment='center')
 
-    fig = plt.figure(figsize=(col * 5, row * 5))
-    grid = ImageGrid(fig, 111, nrows_ncols=(col, row), axes_pad=0.05)
-
-    for ax, im in zip(grid, images):
-        ax.imshow(im, cmap='gray')
-        ax.set_xticks([])
-        ax.set_yticks([])
-    plt.show()
-
-# This will show grid images (you can choose a filter if needed)
-show_grid(df['image_path'].tolist(), row=4)
+plt.tight_layout()
+plt.show()
