@@ -24,9 +24,72 @@ def extract_identifier(filename):
 
 print("Reading data")
 
-parent_directory = '../data/procas_raw_sample'
-image_paths = glob.glob(os.path.join(parent_directory, '*/*PROCAS*.dcm'))
+parent_directory = 'Z:/PROCAS_ALL_PROCESSED'
+
+mosaic_data = pd.read_csv('../data/matched_mosaics.csv', sep=',')
+mosaic_ids = mosaic_data['Patient']
+vas_density_data = mosaic_data['VASCombinedAvDensity']
+
+id_vas_dict = {}
+for id, vas in zip(mosaic_ids, vas_density_data):
+    if vas:
+        id_vas_dict[id] = vas
+
+mosaic_ids = mosaic_ids.unique()
+
+look_for_sub = ['7e', '10f']
+for i in range(8, 11):
+    look_for_sub.append('{}a'.format(i))
+    look_for_sub.append('{}b'.format(i))
+    look_for_sub.append('{}c'.format(i))
+    look_for_sub.append('{}d'.format(i))
+    look_for_sub.append('{}e'.format(i))
+
+mosaic_directories = []
+for id in tqdm(mosaic_ids):
+    checked = False
+    for check in look_for_sub:
+        if check in id:
+            checked = True
+            mosaic_directories.append(parent_directory + '/' + 'Densitas_{}_anon/{}'.format(check, id))
+            break
+    if not checked:
+        mosaic_directories.append(parent_directory + '/' + id)
+
+# raw_reference = pd.read_csv('../data/PROCAS_reference.csv', sep=',')
+# raw_ids = raw_reference[raw_reference['ASSURE_PROCESSED_ANON_ID'].isin(mosaic_ids)]['ASSURE_RAW_ID']
+
+# # image_paths = glob.glob(os.path.join(parent_directory, '*/*PROCAS*.dcm'))
+# print("Search for paths")
+# directory_paths = []
+# for dirpath, dirnames, filenames in os.walk(parent_directory):
+#     for name in dirnames:
+#         if name in mosaic_ids:
+#             directory_paths.append(os.path.join(dirpath, name))
+
+# directory_paths = [parent_directory + '\\' + str(id) for id in mosaic_ids]
+
+import shutil
+
+new_parent_directory = "../data/mosaics_processed"
+print("Copying files")
+for dir_path in tqdm(mosaic_directories):
+    # Get the last part of the directory (i.e., the folder name)
+    folder_name = os.path.basename(dir_path)
+
+    # Create the new path where you want to copy the directory
+    new_path = os.path.join(new_parent_directory, folder_name)
+
+    # Copy the directory to the new location
+    shutil.copytree(dir_path, new_path)
+
+print('Looping through directories and get the .dcm files')
+image_paths = []
+for dir_path in tqdm(mosaic_directories):
+    image_paths.extend(glob.glob(dir_path + '/*.dcm'))
+
 df = pd.DataFrame({'image_path': image_paths})
+
 df['identifier'] = df['image_path'].apply(lambda x: extract_identifier(os.path.basename(x)))
 
 df_csv = pd.read_csv('../data/full_procas_info3.csv', sep=',')
