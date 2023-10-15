@@ -256,9 +256,50 @@ if __name__ == "__main__":
             return x
 
 
+    class PatchEmbedding(nn.Module):
+        def __init__(self, in_channels=1, patch_size=16, embed_dim=512):
+            super().__init__()
+            self.patch_size = patch_size
+            self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+        def forward(self, x):
+            x = self.proj(x)  # (B, embed_dim, H', W')
+            x = x.flatten(2)  # (B, embed_dim, H'*W')
+            x = x.transpose(1, 2)  # (B, H'*W', embed_dim)
+            return x
+
+
+    class TransformerModel(nn.Module):
+        def __init__(self, embed_dim=512, num_heads=8, num_layers=2, num_classes=1):
+            super(TransformerModel, self).__init__()
+
+            self.patch_embed = PatchEmbedding(embed_dim=embed_dim)
+
+            # Transformer Encoder layers
+            self.encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
+            self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
+
+            # Classifier head
+            self.classifier = nn.Linear(embed_dim, num_classes)
+
+        def forward(self, x):
+            # Create patch embeddings
+            x = self.patch_embed(x)
+
+            # Pass through transformer
+            x = self.transformer_encoder(x)
+
+            # Global average pooling and classifier
+            x = x.mean(dim=1)  # (B, embed_dim)
+            x = self.classifier(x)
+
+            return x
+
+
     # Initialize model, criterion, optimizer
     # model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
-    model = ResNetTransformer().cuda()
+    # model = ResNetTransformer().cuda()
+    model = TransformerModel().cuda()
     criterion = nn.MSELoss()  # Mean squared error for regression
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 

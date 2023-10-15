@@ -5,6 +5,7 @@ import os
 import random
 import glob
 import re
+import math
 
 import pydicom
 import matplotlib.pyplot as plt
@@ -14,6 +15,7 @@ import seaborn as sns
 from scipy.stats import gaussian_kde
 from skimage.transform import resize
 from torch.utils.data import Dataset, DataLoader, random_split
+from torchvision.transforms.functional import pad
 from tqdm import tqdm
 
 sns.set(style='dark')
@@ -24,117 +26,22 @@ def extract_identifier(filename):
 
 print("Reading data")
 
-parent_directory = 'Z:/PROCAS_ALL_PROCESSED'
+parent_directory = '../data/mosaics_processed'
 
 mosaic_data = pd.read_csv('../data/matched_mosaics.csv', sep=',')
 mosaic_ids = mosaic_data['Patient']
 vas_density_data = mosaic_data['VASCombinedAvDensity']
 
+processed = True
+processed_dataset_path = '../data/mosaics_processed/dataset_only_vas.pth'
+
+# save mosaic_ids which have a vas score
 id_vas_dict = {}
 for id, vas in zip(mosaic_ids, vas_density_data):
-    if vas:
+    if not np.isnan(vas):
         id_vas_dict[id] = vas
 
 mosaic_ids = mosaic_ids.unique()
-
-look_for_sub = ['7e', '10f']
-for i in range(8, 11):
-    look_for_sub.append('{}a'.format(i))
-    look_for_sub.append('{}b'.format(i))
-    look_for_sub.append('{}c'.format(i))
-    look_for_sub.append('{}d'.format(i))
-    look_for_sub.append('{}e'.format(i))
-
-mosaic_directories = []
-for id in tqdm(mosaic_ids):
-    checked = False
-    for check in look_for_sub:
-        if check in id:
-            checked = True
-            mosaic_directories.append(parent_directory + '/' + 'Densitas_{}_anon/{}'.format(check, id))
-            break
-    if not checked:
-        mosaic_directories.append(parent_directory + '/' + id)
-
-# raw_reference = pd.read_csv('../data/PROCAS_reference.csv', sep=',')
-# raw_ids = raw_reference[raw_reference['ASSURE_PROCESSED_ANON_ID'].isin(mosaic_ids)]['ASSURE_RAW_ID']
-
-# # image_paths = glob.glob(os.path.join(parent_directory, '*/*PROCAS*.dcm'))
-# print("Search for paths")
-# directory_paths = []
-# for dirpath, dirnames, filenames in os.walk(parent_directory):
-#     for name in dirnames:
-#         if name in mosaic_ids:
-#             directory_paths.append(os.path.join(dirpath, name))
-
-# directory_paths = [parent_directory + '\\' + str(id) for id in mosaic_ids]
-
-import shutil
-
-new_parent_directory = "../data/mosaics_processed"
-print("Copying files")
-for dir_path in tqdm(mosaic_directories):
-    # Get the last part of the directory (i.e., the folder name)
-    folder_name = os.path.basename(dir_path)
-
-    # Create the new path where you want to copy the directory
-    new_path = os.path.join(new_parent_directory, folder_name)
-
-    # Copy the directory to the new location
-    shutil.copytree(dir_path, new_path)
-
-print('Looping through directories and get the .dcm files')
-image_paths = []
-for dir_path in tqdm(mosaic_directories):
-    image_paths.extend(glob.glob(dir_path + '/*.dcm'))
-
-df = pd.DataFrame({'image_path': image_paths})
-
-df['identifier'] = df['image_path'].apply(lambda x: extract_identifier(os.path.basename(x)))
-
-df_csv = pd.read_csv('../data/full_procas_info3.csv', sep=',')
-
-# Extract unique identifiers from df
-unique_identifiers = df['identifier'].unique().astype(int)
-# Filter df_csv based on these unique identifiers
-filtered_df = df_csv[df_csv['Unnamed: 0'].isin(unique_identifiers)]
-
-# Select only the 'VASCombinedAvDensity' column
-vas_density_data = filtered_df['VASCombinedAvDensity']
-
-data = []
-for path in df['image_path']:
-    dicom_data = pydicom.dcmread(path, force=True)
-    if hasattr(dicom_data, 'pixel_array'):
-        data.append(dicom_data.pixel_array.shape)
-    else:
-        print(f"Skipped {path} due to missing pixel data")
-        df = df[df.image_path != path]
-
-df['height'], df['width'] = zip(*data)
-
-views = ["LCC", "LMLO", "RMLO", "RCC"]
-
-chosen_identifiers = random.sample(list(df['identifier'].unique()), 4)
-dfs = [[df[(df['identifier'] == identifier) & (df['image_path'].str.contains(view))] for view in views] for identifier in chosen_identifiers]
-
-# fig, axes = plt.subplots(4, len(views), figsize=(15, 15))
-# for row, identifier_dfs in enumerate(dfs):
-#     for idx, view in enumerate(views):
-#         if not identifier_dfs[idx].empty:
-#             path = identifier_dfs[idx]['image_path'].iloc[0]
-#             dicom_data = pydicom.dcmread(path, force=True)
-#             if hasattr(dicom_data, 'pixel_array'):
-#                 axes[row, idx].imshow(dicom_data.pixel_array, cmap='gray')
-#         axes[row, idx].set_xticks([])
-#         axes[row, idx].set_yticks([])
-#         if row == 0:
-#             axes[row, idx].set_title(f'{view}')
-#         if idx == 0:
-#             axes[row, idx].set_ylabel(f'ID: {chosen_identifiers[row]}', rotation=0, labelpad=50, verticalalignment='center')
-#
-# plt.tight_layout()
-# plt.show()
 
 def pre_process_mammograms(mammographic_images, sides, heights, widths, pixel_sizes, image_types):
     target_pixel_size = 0.0941
@@ -167,70 +74,93 @@ def pre_process_mammograms(mammographic_images, sides, heights, widths, pixel_si
         processed_images.append(mammographic_image)
     return torch.stack([torch.from_numpy(img).float() for img in processed_images], dim=0)
 
+# This function will preprocess and zip all images and return a dataset ready for saving
+def preprocess_and_zip_all_images(parent_directory, id_vas_dict):
+    dataset_entries = []
 
-class MammogramDataset(Dataset):
-    def __init__(self, images, targets, identifiers, sides, heights, widths, pixel_sizes, image_types):
-        self.images = images
-        self.targets = targets
-        self.identifiers = identifiers
-        self.sides = sides
-        self.heights = heights
-        self.widths = widths
-        self.pixel_sizes = pixel_sizes
-        self.image_types = image_types
+    patient_dirs = [d for d in os.listdir(parent_directory) if d in id_vas_dict]
+    patient_dirs.sort()  # Ensuring a deterministic order
 
-    def __len__(self):
-        return len(self.images)
+    for patient_dir in tqdm(patient_dirs):
+        patient_path = os.path.join(parent_directory, patient_dir)
+        image_files = [f for f in os.listdir(patient_path) if f.endswith('.dcm')]
 
-    def __getitem__(self, idx):
-        return (self.images[idx], self.targets[idx], self.identifiers[idx], self.sides[idx], self.heights[idx],
-                self.widths[idx], self.pixel_sizes[idx], self.image_types[idx])
+        # Load all images for the given patient/directory
+        all_images = [pydicom.dcmread(os.path.join(patient_path, f), force=True).pixel_array for f in image_files]
+        all_sides = ['L' if 'LCC' in f or 'LMLO' in f else 'R' for f in image_files]
+        all_heights = [img.shape[0] for img in all_images]
+        all_widths = [img.shape[1] for img in all_images]
+        all_pixel_sizes = [(0.0941, 0.0941) for _ in all_images]
+        all_image_types = ['raw' if ('raw' in patient_path or 'RAW' in patient_path)
+                           else 'processed' for _ in image_files]
 
+        preprocessed_images = pre_process_mammograms(all_images, all_sides, all_heights, all_widths, all_pixel_sizes,
+                                                     all_image_types)
 
-# Load and preprocess all images
-all_images = [pydicom.dcmread(path, force=True).pixel_array for path in df['image_path']]
-all_sides = ['L' if 'LCC' in path or 'LMLO' in path else 'R' for path in df['image_path']]
-all_heights = df['height'].tolist()
-all_widths = df['width'].tolist()
-# Assuming the same pixel size for all images for simplicity, modify as needed
-all_pixel_sizes = [(0.0941, 0.0941) for _ in range(len(all_images))]
-# all_image_types = ['raw' if 'raw' in path else 'processed' for path in df['image_path']]
-all_image_types = ['raw' if 'raw' in parent_directory else 'processed' for path in df['image_path']]
+        dataset_entries.append((preprocessed_images, id_vas_dict[patient_dir]))
 
-processed = True
+    return dataset_entries
+
+def custom_collate(batch):
+    # Separate images and labels
+    images, labels = zip(*batch)
+
+    # Determine the max combined width
+    max_width = max([sum(img.size(-1) for img in img_list) for img_list in images])
+
+    # Stack images horizontally with padding
+    stacked_images = []
+    for img_list in images:
+        combined_width = sum(img.size(-1) for img in img_list)
+        padding_size = max_width - combined_width
+        combined_img = torch.cat(tuple(img_list), dim=-1)  # Use tuple() here
+        if padding_size > 0:
+            # Pad on the right
+            combined_img = pad(combined_img, (0, 0, padding_size, 0))
+        stacked_images.append(combined_img)
+
+    # Stack the processed images into a batch
+    images_tensor = torch.stack(stacked_images)
+
+    # Convert the list of regression targets to a tensor
+    labels_tensor = torch.tensor(labels, dtype=torch.float32)  # Change the dtype if needed
+
+    return images_tensor, labels_tensor
 
 if not processed:
-    preprocessed_images = pre_process_mammograms(all_images, all_sides, all_heights, all_widths, all_pixel_sizes, all_image_types)
-    # Include VASCombinedAvDensity as targets.
-    # all_targets = vas_density_data.tolist()
+    # Generate the dataset and save it
+    if not os.path.exists(processed_dataset_path):
+        dataset_entries = preprocess_and_zip_all_images(parent_directory, id_vas_dict)
+        torch.save(dataset_entries, processed_dataset_path)
 
-    # Initialize dataset with the targets
-    all_indentities = df['identifier'].astype(int).tolist()
-    all_targets = [vas_density_data[i] for i in all_indentities]
-    dataset = MammogramDataset(preprocessed_images, all_targets, all_indentities, all_sides,
-                               all_heights, all_widths, all_pixel_sizes, all_image_types)
 
-    torch.save(dataset, '../data/procas_raw_sample/dataset.pth')
-else:
-    print("Loading data")
-    dataset = torch.load('../data/procas_raw_sample/dataset.pth')
+class MammogramDataset(Dataset):
+    def __init__(self, dataset_path):
+        self.dataset = torch.load(dataset_path)
 
-print("Creating dataloaders")
-random.shuffle(unique_identifiers)
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        return self.dataset[idx]
+
+# Load dataset from saved path
+dataset = MammogramDataset(processed_dataset_path)
+
+# Splitting the dataset
 train_ratio, val_ratio = 0.7, 0.2
-num_train = int(train_ratio * len(unique_identifiers))
-num_val = int(val_ratio * len(unique_identifiers))
-train_ids, val_ids, test_ids = unique_identifiers[:num_train], unique_identifiers[num_train:num_train+num_val], unique_identifiers[num_train+num_val:]
+num_train = int(train_ratio * len(dataset))
+num_val = int(val_ratio * len(dataset))
+num_test = len(dataset) - num_train - num_val
 
-# indices_only = [i for i, num in enumerate(dataset.identifiers) if num in train_ids.astype(int)]
-train_dataset = [dataset[i] for i, num in enumerate(dataset.identifiers) if num in train_ids.astype(int)]
-val_dataset = [dataset[i] for i, num in enumerate(dataset.identifiers) if num in val_ids.astype(int)]
-test_dataset = [dataset[i] for i, num in enumerate(dataset.identifiers) if num in test_ids.astype(int)]
+train_dataset, val_dataset, test_dataset = random_split(dataset, [num_train, num_val, num_test])
 
-batch_size = 32
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+# Create DataLoaders
+batch_size = 2
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
+
 
 
 if __name__ == "__main__":
@@ -279,6 +209,7 @@ if __name__ == "__main__":
             x = self.fc_layer(x)
             return x
 
+
     # define complex resnet into transformer model
     class ResNetTransformer(nn.Module):
         def __init__(self):
@@ -319,11 +250,65 @@ if __name__ == "__main__":
             return x
 
 
+    class PatchEmbedding(nn.Module):
+        def __init__(self, in_channels=1, patch_size=16, embed_dim=512):
+            super().__init__()
+            self.patch_size = patch_size
+            self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+        def forward(self, x):
+            x = self.proj(x)  # (B, embed_dim, H', W')
+            x = x.flatten(2)  # (B, embed_dim, H'*W')
+            x = x.transpose(1, 2)  # (B, H'*W', embed_dim)
+            return x
+
+
+    class PositionalEncoding(nn.Module):
+        def __init__(self, d_model, dropout=0.1, max_len=5000):
+            super(PositionalEncoding, self).__init__()
+            self.dropout = nn.Dropout(p=dropout)
+
+            pe = torch.zeros(max_len, d_model)
+            position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+            pe[:, 0::2] = torch.sin(position * div_term)
+            pe[:, 1::2] = torch.cos(position * div_term)
+            pe = pe.unsqueeze(0).transpose(0, 1)
+            self.register_buffer('pe', pe)
+
+        def forward(self, x):
+            x = x + self.pe[:x.size(0), :]
+            return self.dropout(x)
+
+
+    class TransformerModel(nn.Module):
+        def __init__(self, embed_dim=256, num_heads=8, num_layers=2, num_classes=1):
+            super(TransformerModel, self).__init__()
+            self.patch_embed = PatchEmbedding(embed_dim=embed_dim)
+            self.pos_encoder = PositionalEncoding(embed_dim)
+
+            # Transformer Encoder layers
+            self.encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
+            self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
+            self.classifier = nn.Linear(embed_dim, num_classes)
+
+        def forward(self, x):
+            x = self.patch_embed(x)  # Patch embedding
+            x = self.pos_encoder(x)  # Add positional encoding
+
+            x = self.transformer_encoder(x)  # Transformer encoder
+            x = x.mean(dim=1)  # Global average pooling
+            x = self.classifier(x)  # Classifier
+
+            return x
+
+
     # Initialize model, criterion, optimizer
     # model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
-    model = ResNetTransformer().cuda()
+    # model = ResNetTransformer().cuda()
+    model = TransformerModel().cuda()
     criterion = nn.MSELoss()  # Mean squared error for regression
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
     # Training parameters
     num_epochs = 100
@@ -336,8 +321,7 @@ if __name__ == "__main__":
     for epoch in tqdm(range(num_epochs)):
         model.train()
         train_loss = 0.0
-        for data in train_loader:
-            inputs, targets, _, _, _, _, _, _ = data  # Unpack data from DataLoader
+        for inputs, targets in train_loader:  # Simplified unpacking
             inputs, targets = inputs.cuda(), targets.cuda()  # Send data to GPU
 
             # Zero the parameter gradients
@@ -356,8 +340,7 @@ if __name__ == "__main__":
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for data in val_loader:
-                inputs, targets, _, _, _, _, _, _ = data
+            for inputs, targets in val_loader:  # Simplified unpacking
                 inputs, targets = inputs.cuda(), targets.cuda()
                 outputs = model(inputs.unsqueeze(1))
                 loss = criterion(outputs.squeeze(), targets.float())
@@ -386,8 +369,7 @@ if __name__ == "__main__":
 
     test_loss = 0.0
     with torch.no_grad():
-        for data in test_loader:
-            inputs, targets, _, _, _, _, _, _ = data
+        for inputs, targets in test_loader:  # Simplified unpacking
             inputs, targets = inputs.cuda(), targets.cuda()
             outputs = model(inputs.unsqueeze(1))
             loss = criterion(outputs.squeeze(), targets.float())
@@ -397,3 +379,4 @@ if __name__ == "__main__":
     print(f"Test Loss: {test_loss:.4f}")
 
     print("Done")
+
