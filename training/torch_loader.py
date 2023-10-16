@@ -120,8 +120,9 @@ class MammogramDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-        return (self.images[idx], self.targets[idx], self.identifiers[idx], self.sides[idx], self.heights[idx],
-                self.widths[idx], self.pixel_sizes[idx], self.image_types[idx])
+        return (self.images[idx], self.targets[idx])
+            # , self.identifiers[idx], self.sides[idx], self.heights[idx],
+            #     self.widths[idx], self.pixel_sizes[idx], self.image_types[idx])
 
 
 # Load and preprocess all images
@@ -171,137 +172,15 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 
 if __name__ == "__main__":
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.optim.lr_scheduler import ReduceLROnPlateau
-    from torchvision.models import resnet34
-    from torch.nn import TransformerEncoder, TransformerEncoderLayer
-
-
-    # Define a simple CNN
-    class SimpleCNN(nn.Module):
-        def __init__(self, dropout_prob=0.5):
-            super(SimpleCNN, self).__init__()
-            self.conv_layer = nn.Sequential(
-                nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-                nn.MaxPool2d(kernel_size=2),
-
-                nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-                nn.MaxPool2d(kernel_size=2),
-
-                nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-                nn.MaxPool2d(kernel_size=2),
-            )
-            self.fc_layer = nn.Sequential(
-                nn.Linear(64 * 32 * 16 * 10, 256),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-
-                nn.Linear(256, 64),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-
-                nn.Linear(64, 1)  # Regression output
-            )
-
-        def forward(self, x):
-            x = self.conv_layer(x)
-            x = x.view(x.size(0), -1)
-            x = self.fc_layer(x)
-            return x
-
-    # define complex resnet into transformer model
-    class ResNetTransformer(nn.Module):
-        def __init__(self):
-            super(ResNetTransformer, self).__init__()
-
-            # Using ResNet-34 as a feature extractor
-            self.resnet = resnet34(pretrained=False)  # set pretrained to False
-
-            # Modify the first layer to accept single-channel (grayscale) images
-            self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
-
-            self.resnet.fc = nn.Identity()  # Removing the fully connected layer
-
-            # Assuming we are using an average pool and get a 512-dimensional vector
-            d_model = 512
-            nhead = 4  # Number of self-attention heads
-            num_encoder_layers = 2  # Number of Transformer encoder layers
-
-            # Transformer Encoder layers
-            encoder_layers = TransformerEncoderLayer(d_model, nhead)
-            self.transformer_encoder = TransformerEncoder(encoder_layers, num_encoder_layers)
-
-            # Final regressor
-            self.regressor = nn.Linear(d_model, 1)
-
-        def forward(self, x):
-            # Extract features using ResNet
-            x = self.resnet(x)
-            x = x.unsqueeze(1)  # Add sequence length dimension for Transformer
-
-            # Pass features through Transformer
-            x = self.transformer_encoder(x)
-
-            # Regression
-            x = x.squeeze(1)
-            x = self.regressor(x)
-
-            return x
-
-
-    class PatchEmbedding(nn.Module):
-        def __init__(self, in_channels=1, patch_size=16, embed_dim=512):
-            super().__init__()
-            self.patch_size = patch_size
-            self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
-
-        def forward(self, x):
-            x = self.proj(x)  # (B, embed_dim, H', W')
-            x = x.flatten(2)  # (B, embed_dim, H'*W')
-            x = x.transpose(1, 2)  # (B, H'*W', embed_dim)
-            return x
-
-
-    class TransformerModel(nn.Module):
-        def __init__(self, embed_dim=512, num_heads=8, num_layers=2, num_classes=1):
-            super(TransformerModel, self).__init__()
-
-            self.patch_embed = PatchEmbedding(embed_dim=embed_dim)
-
-            # Transformer Encoder layers
-            self.encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
-            self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
-
-            # Classifier head
-            self.classifier = nn.Linear(embed_dim, num_classes)
-
-        def forward(self, x):
-            # Create patch embeddings
-            x = self.patch_embed(x)
-
-            # Pass through transformer
-            x = self.transformer_encoder(x)
-
-            # Global average pooling and classifier
-            x = x.mean(dim=1)  # (B, embed_dim)
-            x = self.classifier(x)
-
-            return x
+    from training.models import *
 
 
     # Initialize model, criterion, optimizer
-    # model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
+    model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
     # model = ResNetTransformer().cuda()
-    model = TransformerModel().cuda()
+    # model = TransformerModel().cuda()
     criterion = nn.MSELoss()  # Mean squared error for regression
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
     # Training parameters
     num_epochs = 100
@@ -314,8 +193,7 @@ if __name__ == "__main__":
     for epoch in tqdm(range(num_epochs)):
         model.train()
         train_loss = 0.0
-        for data in train_loader:
-            inputs, targets, _, _, _, _, _, _ = data  # Unpack data from DataLoader
+        for inputs, targets in train_loader:
             inputs, targets = inputs.cuda(), targets.cuda()  # Send data to GPU
 
             # Zero the parameter gradients
@@ -334,8 +212,7 @@ if __name__ == "__main__":
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for data in val_loader:
-                inputs, targets, _, _, _, _, _, _ = data
+            for inputs, targets in val_loader:
                 inputs, targets = inputs.cuda(), targets.cuda()
                 outputs = model(inputs.unsqueeze(1))
                 loss = criterion(outputs.squeeze(), targets.float())
@@ -364,8 +241,7 @@ if __name__ == "__main__":
 
     test_loss = 0.0
     with torch.no_grad():
-        for data in test_loader:
-            inputs, targets, _, _, _, _, _, _ = data
+        for inputs, targets in test_loader:
             inputs, targets = inputs.cuda(), targets.cuda()
             outputs = model(inputs.unsqueeze(1))
             loss = criterion(outputs.squeeze(), targets.float())
@@ -373,5 +249,24 @@ if __name__ == "__main__":
     test_loss /= len(test_loader.dataset)
 
     print(f"Test Loss: {test_loss:.4f}")
+
+    train_loss, train_labels, train_preds, train_r2 = evaluate_model(model, train_loader, criterion)
+    val_loss, val_labels, val_preds, val_r2 = evaluate_model(model, val_loader, criterion)
+    test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion)
+
+    # R2 Scores
+    print(f"Train R2 Score: {train_r2:.4f}")
+    print(f"Validation R2 Score: {val_r2:.4f}")
+    print(f"Test R2 Score: {test_r2:.4f}")
+
+    # Scatter plots
+    plot_scatter(train_labels, train_preds, "Train Scatter Plot")
+    plot_scatter(val_labels, val_preds, "Validation Scatter Plot")
+    plot_scatter(test_labels, test_preds, "Test Scatter Plot")
+
+    # Error distributions
+    plot_error_distribution(train_labels, train_preds, "Train Error Distribution")
+    plot_error_distribution(val_labels, val_preds, "Validation Error Distribution")
+    plot_error_distribution(test_labels, test_preds, "Test Error Distribution")
 
     print("Done")

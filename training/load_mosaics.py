@@ -1,24 +1,71 @@
-import numpy
 import torch
 
 import os
-import random
-import glob
 import re
-import math
 
 import pydicom
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from scipy.stats import gaussian_kde
 from skimage.transform import resize
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision.transforms.functional import pad
 from tqdm import tqdm
+from sklearn.metrics import r2_score
 
 sns.set(style='dark')
+
+def plot_scatter(true_values, pred_values, title):
+    plt.figure(figsize=(10,6))
+    plt.scatter(true_values, pred_values, alpha=0.5)
+    plt.plot([min(true_values), max(true_values)], [min(true_values), max(true_values)], '--', lw=2)
+    plt.xlabel('True Values')
+    plt.ylabel('Predicted Values')
+    plt.title(title)
+    plt.show()
+
+def plot_error_distribution(true_values, pred_values, title):
+    errors = np.array(true_values) - np.array(pred_values)
+    sns.histplot(errors, bins=50, kde=True)
+    plt.xlabel('Error')
+    plt.ylabel('Count')
+    plt.title(title)
+    plt.show()
+
+def evaluate_model(model, dataloader, criterion):
+    model.eval()
+    running_loss = 0.0
+    all_targets = []
+    all_predictions = []
+
+    with torch.no_grad():
+        for inputs, targets in dataloader:
+            inputs, targets = inputs.cuda(), targets.cuda()
+            outputs = model(inputs.unsqueeze(1))
+            test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+            test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
+            loss = criterion(test_outputs_original_scale, test_targets_original_scale)
+            running_loss += loss.item() * inputs.size(0)
+
+            all_targets.extend(targets.cpu().numpy())
+            all_predictions.extend(outputs.cpu().numpy())
+
+    epoch_loss = running_loss / len(dataloader.dataset)
+    r2 = r2_score(all_targets, all_predictions)
+    return epoch_loss, all_targets, all_predictions, r2
+
+def compute_target_statistics(dataset):
+    labels = [label for _, label in dataset]
+    mean = np.mean(labels)
+    std = np.std(labels)
+    return mean, std
+
+def standardize_targets(target, mean, std):
+    return (target - mean) / std
+
+def inverse_standardize_targets(target, mean, std):
+    return target * std + mean
 
 def extract_identifier(filename):
     match = re.search(r'-([\d]+)-[A-Z]+', filename)
@@ -33,12 +80,14 @@ mosaic_ids = mosaic_data['Patient']
 vas_density_data = mosaic_data['VASCombinedAvDensity']
 
 processed = True
-processed_dataset_path = '../data/mosaics_processed/dataset_only_vas.pth'
+processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0.pth'
+
+best_model_name = 'only_vas_0'
 
 # save mosaic_ids which have a vas score
 id_vas_dict = {}
 for id, vas in zip(mosaic_ids, vas_density_data):
-    if not np.isnan(vas):
+    if not np.isnan(vas) and vas > 0:
         id_vas_dict[id] = vas
 
 mosaic_ids = mosaic_ids.unique()
@@ -122,8 +171,9 @@ def custom_collate(batch):
     # Stack the processed images into a batch
     images_tensor = torch.stack(stacked_images)
 
-    # Convert the list of regression targets to a tensor
+    # Convert the list of regression targets to a tensor and standardize
     labels_tensor = torch.tensor(labels, dtype=torch.float32)  # Change the dtype if needed
+    labels_tensor = standardize_targets(labels_tensor, mean, std)
 
     return images_tensor, labels_tensor
 
@@ -155,6 +205,8 @@ num_test = len(dataset) - num_train - num_val
 
 train_dataset, val_dataset, test_dataset = random_split(dataset, [num_train, num_val, num_test])
 
+mean, std = compute_target_statistics(train_dataset)
+
 # Create DataLoaders
 batch_size = 2
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate)
@@ -164,155 +216,24 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, col
 
 
 if __name__ == "__main__":
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.optim.lr_scheduler import ReduceLROnPlateau
-    from torchvision.models import resnet34
-    from torch.nn import TransformerEncoder, TransformerEncoderLayer
-
-
-    # Define a simple CNN
-    class SimpleCNN(nn.Module):
-        def __init__(self, dropout_prob=0.5):
-            super(SimpleCNN, self).__init__()
-            self.conv_layer = nn.Sequential(
-                nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-                nn.MaxPool2d(kernel_size=2),
-
-                nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-                nn.MaxPool2d(kernel_size=2),
-
-                nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-                nn.MaxPool2d(kernel_size=2),
-            )
-            self.fc_layer = nn.Sequential(
-                nn.Linear(64 * 32 * 16 * 10, 256),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-
-                nn.Linear(256, 64),
-                nn.ReLU(),
-                nn.Dropout(dropout_prob),
-
-                nn.Linear(64, 1)  # Regression output
-            )
-
-        def forward(self, x):
-            x = self.conv_layer(x)
-            x = x.view(x.size(0), -1)
-            x = self.fc_layer(x)
-            return x
-
-
-    # define complex resnet into transformer model
-    class ResNetTransformer(nn.Module):
-        def __init__(self):
-            super(ResNetTransformer, self).__init__()
-
-            # Using ResNet-34 as a feature extractor
-            self.resnet = resnet34(pretrained=False)  # set pretrained to False
-
-            # Modify the first layer to accept single-channel (grayscale) images
-            self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
-
-            self.resnet.fc = nn.Identity()  # Removing the fully connected layer
-
-            # Assuming we are using an average pool and get a 512-dimensional vector
-            d_model = 512
-            nhead = 4  # Number of self-attention heads
-            num_encoder_layers = 2  # Number of Transformer encoder layers
-
-            # Transformer Encoder layers
-            encoder_layers = TransformerEncoderLayer(d_model, nhead)
-            self.transformer_encoder = TransformerEncoder(encoder_layers, num_encoder_layers)
-
-            # Final regressor
-            self.regressor = nn.Linear(d_model, 1)
-
-        def forward(self, x):
-            # Extract features using ResNet
-            x = self.resnet(x)
-            x = x.unsqueeze(1)  # Add sequence length dimension for Transformer
-
-            # Pass features through Transformer
-            x = self.transformer_encoder(x)
-
-            # Regression
-            x = x.squeeze(1)
-            x = self.regressor(x)
-
-            return x
-
-
-    class PatchEmbedding(nn.Module):
-        def __init__(self, in_channels=1, patch_size=16, embed_dim=512):
-            super().__init__()
-            self.patch_size = patch_size
-            self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
-
-        def forward(self, x):
-            x = self.proj(x)  # (B, embed_dim, H', W')
-            x = x.flatten(2)  # (B, embed_dim, H'*W')
-            x = x.transpose(1, 2)  # (B, H'*W', embed_dim)
-            return x
-
-
-    class PositionalEncoding(nn.Module):
-        def __init__(self, d_model, dropout=0.1, max_len=5000):
-            super(PositionalEncoding, self).__init__()
-            self.dropout = nn.Dropout(p=dropout)
-
-            pe = torch.zeros(max_len, d_model)
-            position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-            div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-            pe[:, 0::2] = torch.sin(position * div_term)
-            pe[:, 1::2] = torch.cos(position * div_term)
-            pe = pe.unsqueeze(0).transpose(0, 1)
-            self.register_buffer('pe', pe)
-
-        def forward(self, x):
-            x = x + self.pe[:x.size(0), :]
-            return self.dropout(x)
-
-
-    class TransformerModel(nn.Module):
-        def __init__(self, embed_dim=256, num_heads=8, num_layers=2, num_classes=1):
-            super(TransformerModel, self).__init__()
-            self.patch_embed = PatchEmbedding(embed_dim=embed_dim)
-            self.pos_encoder = PositionalEncoding(embed_dim)
-
-            # Transformer Encoder layers
-            self.encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
-            self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
-            self.classifier = nn.Linear(embed_dim, num_classes)
-
-        def forward(self, x):
-            x = self.patch_embed(x)  # Patch embedding
-            x = self.pos_encoder(x)  # Add positional encoding
-
-            x = self.transformer_encoder(x)  # Transformer encoder
-            x = x.mean(dim=1)  # Global average pooling
-            x = self.classifier(x)  # Classifier
-
-            return x
-
+    from training.models import *
 
     # Initialize model, criterion, optimizer
     # model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
     # model = ResNetTransformer().cuda()
     model = TransformerModel().cuda()
     criterion = nn.MSELoss()  # Mean squared error for regression
-    optimizer = optim.Adam(model.parameters(), lr=0.0001)
+    lr = 0.0001
+    momentum = 0.9
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # optimizer = optim.SGD(model.parameters(),
+    #                          lr=lr, momentum=momentum)
+
+    best_model_name += '_{}a'.format(lr)
 
     # Training parameters
     num_epochs = 100
-    patience = 20
+    patience = 40
     not_improved = 0
     best_val_loss = float('inf')
     scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/3), factor=0.75, verbose=True)
@@ -343,7 +264,9 @@ if __name__ == "__main__":
             for inputs, targets in val_loader:  # Simplified unpacking
                 inputs, targets = inputs.cuda(), targets.cuda()
                 outputs = model(inputs.unsqueeze(1))
-                loss = criterion(outputs.squeeze(), targets.float())
+                val_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+                val_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
+                loss = criterion(val_outputs_original_scale, val_targets_original_scale)
                 val_loss += loss.item() * inputs.size(0)
         val_loss /= len(val_loader.dataset)
 
@@ -354,7 +277,7 @@ if __name__ == "__main__":
             best_val_loss = val_loss
             not_improved = 0
             print("Validation loss improved. Saving best_model.")
-            torch.save(model.state_dict(), 'best_model.pt')
+            torch.save(model.state_dict(), best_model_name)
         else:
             not_improved += 1
             if not_improved >= patience:
@@ -364,7 +287,7 @@ if __name__ == "__main__":
         scheduler.step(val_loss)
 
     # Test the best model
-    model.load_state_dict(torch.load('best_model.pt'))
+    model.load_state_dict(torch.load(best_model_name))
     model.eval()
 
     test_loss = 0.0
@@ -372,11 +295,36 @@ if __name__ == "__main__":
         for inputs, targets in test_loader:  # Simplified unpacking
             inputs, targets = inputs.cuda(), targets.cuda()
             outputs = model(inputs.unsqueeze(1))
-            loss = criterion(outputs.squeeze(), targets.float())
+            test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+            test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
+            loss = criterion(test_outputs_original_scale, test_targets_original_scale)
             test_loss += loss.item() * inputs.size(0)
     test_loss /= len(test_loader.dataset)
 
     print(f"Test Loss: {test_loss:.4f}")
+
+    print("Loading best model weights!")
+    model.load_state_dict(torch.load(best_model_name))
+
+    # Evaluating on all datasets: train, val, test
+    train_loss, train_labels, train_preds, train_r2 = evaluate_model(model, train_loader, criterion)
+    val_loss, val_labels, val_preds, val_r2 = evaluate_model(model, val_loader, criterion)
+    test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion)
+
+    # R2 Scores
+    print(f"Train R2 Score: {train_r2:.4f}")
+    print(f"Validation R2 Score: {val_r2:.4f}")
+    print(f"Test R2 Score: {test_r2:.4f}")
+
+    # Scatter plots
+    plot_scatter(train_labels, train_preds, "Train Scatter Plot")
+    plot_scatter(val_labels, val_preds, "Validation Scatter Plot")
+    plot_scatter(test_labels, test_preds, "Test Scatter Plot")
+
+    # Error distributions
+    plot_error_distribution(train_labels, train_preds, "Train Error Distribution")
+    plot_error_distribution(val_labels, val_preds, "Validation Error Distribution")
+    plot_error_distribution(test_labels, test_preds, "Test Error Distribution")
 
     print("Done")
 
