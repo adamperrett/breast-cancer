@@ -1,4 +1,5 @@
 import torch
+from dadaptation import DAdaptAdam
 
 import os
 import re
@@ -223,20 +224,21 @@ if __name__ == "__main__":
     # model = ResNetTransformer().cuda()
     model = TransformerModel().cuda()
     criterion = nn.MSELoss()  # Mean squared error for regression
-    lr = 0.0001
+    lr = 1
     momentum = 0.9
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = DAdaptAdam(model.parameters())
     # optimizer = optim.SGD(model.parameters(),
     #                          lr=lr, momentum=momentum)
 
-    best_model_name += '_{}a'.format(lr)
+    best_model_name += '_{}dab'.format(lr)
 
     # Training parameters
-    num_epochs = 100
-    patience = 40
+    num_epochs = 300
+    patience = 100
     not_improved = 0
     best_val_loss = float('inf')
-    scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/3), factor=0.75, verbose=True)
+    # scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/10), factor=0.9, verbose=True)
 
     print("Beginning training")
     for epoch in tqdm(range(num_epochs)):
@@ -284,7 +286,7 @@ if __name__ == "__main__":
                 print("Early stopping")
                 break
 
-        scheduler.step(val_loss)
+        # scheduler.step(val_loss)
 
     # Test the best model
     model.load_state_dict(torch.load(best_model_name))
@@ -307,9 +309,9 @@ if __name__ == "__main__":
     model.load_state_dict(torch.load(best_model_name))
 
     # Evaluating on all datasets: train, val, test
-    train_loss, train_labels, train_preds, train_r2 = evaluate_model(model, train_loader, criterion)
-    val_loss, val_labels, val_preds, val_r2 = evaluate_model(model, val_loader, criterion)
-    test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion)
+    train_loss, train_labels, train_preds, train_r2 = evaluate_model(model, train_loader, criterion, inverse_standardize_targets, mean, std)
+    val_loss, val_labels, val_preds, val_r2 = evaluate_model(model, val_loader, criterion, inverse_standardize_targets, mean, std)
+    test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion, inverse_standardize_targets, mean, std)
 
     # R2 Scores
     print(f"Train R2 Score: {train_r2:.4f}")

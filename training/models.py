@@ -131,7 +131,7 @@ class TransformerModel(nn.Module):
         # Transformer Encoder layers
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
         self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
-        self.classifier = nn.Linear(embed_dim, num_classes, bias=False)
+        self.classifier = nn.Linear(embed_dim, num_classes)
 
     def forward(self, x):
         x = self.patch_embed(x)  # Patch embedding
@@ -161,7 +161,7 @@ def plot_error_distribution(true_values, pred_values, title):
     plt.title(title)
     plt.show()
 
-def evaluate_model(model, dataloader, criterion):
+def evaluate_model(model, dataloader, criterion, inverse_standardize_targets, mean, std):
     model.eval()
     running_loss = 0.0
     all_targets = []
@@ -171,7 +171,9 @@ def evaluate_model(model, dataloader, criterion):
         for inputs, targets in dataloader:
             inputs, targets = inputs.cuda(), targets.cuda()
             outputs = model(inputs.unsqueeze(1))
-            loss = criterion(outputs.squeeze(), targets.float())
+            test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+            test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
+            loss = criterion(test_outputs_original_scale, test_targets_original_scale)
             running_loss += loss.item() * inputs.size(0)
 
             all_targets.extend(targets.cpu().numpy())
