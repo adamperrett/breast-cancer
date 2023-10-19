@@ -92,10 +92,12 @@ class ResNetTransformer(nn.Module):
 
 
 class PatchEmbedding(nn.Module):
-    def __init__(self, in_channels=1, patch_size=16, embed_dim=512):
+    def __init__(self, in_channels=1, patch_size=12, embed_dim=512, bias=True):
         super().__init__()
         self.patch_size = patch_size
-        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias)
+        if not bias:
+            nn.init.constant_(self.proj.weight, 1 / (patch_size * patch_size))
 
     def forward(self, x):
         x = self.proj(x)  # (B, embed_dim, H', W')
@@ -105,7 +107,7 @@ class PatchEmbedding(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
+    def __init__(self, d_model, dropout=0.1, max_len=5120):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -123,21 +125,38 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, embed_dim=256, num_heads=8, num_layers=2, num_classes=1):
+    def __init__(self, embed_dim=256, num_heads=8, num_layers=2, num_classes=1, epsilon=0):
         super(TransformerModel, self).__init__()
         self.patch_embed = PatchEmbedding(embed_dim=embed_dim)
+        self.mask_generator = PatchEmbedding(embed_dim=embed_dim, bias=False)
+        self.epsilon = epsilon
         self.pos_encoder = PositionalEncoding(embed_dim)
 
         # Transformer Encoder layers
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
         self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
-        self.classifier = nn.Linear(embed_dim, num_classes)
+        self.classifier = nn.Linear(embed_dim, num_classes, bias=True)
+
+    def generate_padding_mask(self, x):
+        # Assuming 0 is used for padding in patch embeddings
+        # Calculate the mean across the embedding dimension, if it's 0, it's a padding patch
+        mask = x.mean(dim=-1) > self.epsilon
+        # print('total masked = ', torch.sum(mask.float() - 1))
+        return mask
 
     def forward(self, x):
+        # Generate padding mask
+        empty_check = self.mask_generator(x)
+        mask = self.generate_padding_mask(empty_check)
+
         x = self.patch_embed(x)  # Patch embedding
         x = self.pos_encoder(x)  # Add positional encoding
 
-        x = self.transformer_encoder(x)  # Transformer encoder
+        # Transformer expects the mask to have a different shape, so we modify it accordingly
+        # mask = mask.unsqueeze(1).unsqueeze(2)
+        mask = (1.0 - mask.float()) * -10000.0  # Convert to attention scores
+
+        x = self.transformer_encoder(x, src_key_padding_mask=mask.T)  # Transformer encoder
         x = x.mean(dim=1)  # Global average pooling
         x = self.classifier(x)  # Classifier
 
@@ -176,8 +195,8 @@ def evaluate_model(model, dataloader, criterion, inverse_standardize_targets, me
             loss = criterion(test_outputs_original_scale, test_targets_original_scale)
             running_loss += loss.item() * inputs.size(0)
 
-            all_targets.extend(targets.cpu().numpy())
-            all_predictions.extend(outputs.cpu().numpy())
+            all_targets.extend(test_targets_original_scale.cpu().numpy())
+            all_predictions.extend(test_outputs_original_scale.cpu().numpy())
 
     epoch_loss = running_loss / len(dataloader.dataset)
     r2 = r2_score(all_targets, all_predictions)

@@ -1,9 +1,7 @@
 import torch
 from dadaptation import DAdaptAdam
-
 import os
 import re
-
 import pydicom
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,8 +10,20 @@ import seaborn as sns
 from skimage.transform import resize
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision.transforms.functional import pad
+from torchvision import transforms
 from tqdm import tqdm
-from sklearn.metrics import r2_score
+from skimage import filters
+
+
+seed_value = 272727
+np.random.seed(seed_value)
+torch.manual_seed(seed_value)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(seed_value)
+    torch.cuda.manual_seed_all(seed_value)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 sns.set(style='dark')
 
@@ -107,6 +117,8 @@ def pre_process_mammograms(mammographic_images, sides, heights, widths, pixel_si
 
         # Reshape and preprocess
         mammographic_image = np.reshape(mammographic_image, (height, width))
+        # otsu filter from skimage
+        # cut_off = filters.threshold_otsu(temp_image)
         new_height = int(np.ceil(height * pixel_size[0] / target_pixel_size))
         new_width = int(np.ceil(width * pixel_size[1] / target_pixel_size))
         max_intensity = np.amax(mammographic_image)
@@ -185,15 +197,29 @@ if not processed:
         torch.save(dataset_entries, processed_dataset_path)
 
 
+
+# Define your augmentations
+data_transforms = transforms.Compose([
+    transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10),
+    # Assuming images are PIL images; if not, you'll need to adjust or implement suitable transformations
+    transforms.RandomCrop(size=(10 * 64, 8 * 64), padding=4),
+    # Add any other desired transforms here
+])
+
 class MammogramDataset(Dataset):
-    def __init__(self, dataset_path):
+    def __init__(self, dataset_path, transform=None):
         self.dataset = torch.load(dataset_path)
+        self.transform = transform
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        return self.dataset[idx]
+        image, label = self.dataset[idx]
+        if self.transform:
+            transformed_image = [self.transform(im.unsqueeze(0)).squeeze(0) for im in image]
+            image = transformed_image
+        return image, label
 
 # Load dataset from saved path
 dataset = MammogramDataset(processed_dataset_path)
@@ -205,6 +231,9 @@ num_val = int(val_ratio * len(dataset))
 num_test = len(dataset) - num_train - num_val
 
 train_dataset, val_dataset, test_dataset = random_split(dataset, [num_train, num_val, num_test])
+
+# Applying the transform only to the training dataset
+train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=data_transforms)
 
 mean, std = compute_target_statistics(train_dataset)
 
@@ -222,7 +251,8 @@ if __name__ == "__main__":
     # Initialize model, criterion, optimizer
     # model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
     # model = ResNetTransformer().cuda()
-    model = TransformerModel().cuda()
+    epsilon = 0.
+    model = TransformerModel(epsilon=epsilon).cuda()
     criterion = nn.MSELoss()  # Mean squared error for regression
     lr = 1
     momentum = 0.9
@@ -231,11 +261,11 @@ if __name__ == "__main__":
     # optimizer = optim.SGD(model.parameters(),
     #                          lr=lr, momentum=momentum)
 
-    best_model_name += '_{}dab'.format(lr)
+    best_model_name += '_{}mda'.format(epsilon)
 
     # Training parameters
-    num_epochs = 300
-    patience = 100
+    num_epochs = 600
+    patience = 600
     not_improved = 0
     best_val_loss = float('inf')
     # scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/10), factor=0.9, verbose=True)
@@ -244,6 +274,7 @@ if __name__ == "__main__":
     for epoch in tqdm(range(num_epochs)):
         model.train()
         train_loss = 0.0
+        scaled_train_loss = 0.0
         for inputs, targets in train_loader:  # Simplified unpacking
             inputs, targets = inputs.cuda(), targets.cuda()  # Send data to GPU
 
@@ -257,7 +288,14 @@ if __name__ == "__main__":
             optimizer.step()
 
             train_loss += loss.item() * inputs.size(0)
+
+            with torch.no_grad():
+                train_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+                train_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
+                scaled_train_loss += criterion(train_outputs_original_scale, train_targets_original_scale).item() * inputs.size(0)
+
         train_loss /= len(train_loader.dataset)
+        scaled_train_loss /= len(train_loader.dataset)
 
         # Validation
         model.eval()
@@ -272,7 +310,8 @@ if __name__ == "__main__":
                 val_loss += loss.item() * inputs.size(0)
         val_loss /= len(val_loader.dataset)
 
-        print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        # print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+        #       f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} with test loss {val_test_loss:.4f}")
 
         # Check early stopping
         if val_loss < best_val_loss:
@@ -280,7 +319,31 @@ if __name__ == "__main__":
             not_improved = 0
             print("Validation loss improved. Saving best_model.")
             torch.save(model.state_dict(), best_model_name)
+            val_test_loss = 0.0
+            with torch.no_grad():
+                for inputs, targets in test_loader:  # Simplified unpacking
+                    inputs, targets = inputs.cuda(), targets.cuda()
+                    outputs = model(inputs.unsqueeze(1))
+                    test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+                    test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
+                    loss = criterion(test_outputs_original_scale, test_targets_original_scale)
+                    val_test_loss += loss.item() * inputs.size(0)
+            val_test_loss /= len(test_loader.dataset)
+            print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+                  f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} with test loss {val_test_loss:.4f}")
         else:
+            val_test_loss = 0.0
+            with torch.no_grad():
+                for inputs, targets in test_loader:  # Simplified unpacking
+                    inputs, targets = inputs.cuda(), targets.cuda()
+                    outputs = model(inputs.unsqueeze(1))
+                    test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+                    test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
+                    loss = criterion(test_outputs_original_scale, test_targets_original_scale)
+                    val_test_loss += loss.item() * inputs.size(0)
+            val_test_loss /= len(test_loader.dataset)
+            print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+                  f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} with test loss {val_test_loss:.4f}")
             not_improved += 1
             if not_improved >= patience:
                 print("Early stopping")
@@ -319,14 +382,28 @@ if __name__ == "__main__":
     print(f"Test R2 Score: {test_r2:.4f}")
 
     # Scatter plots
-    plot_scatter(train_labels, train_preds, "Train Scatter Plot")
-    plot_scatter(val_labels, val_preds, "Validation Scatter Plot")
-    plot_scatter(test_labels, test_preds, "Test Scatter Plot")
+    plot_scatter(train_labels, train_preds, "Train Scatter Plot "+best_model_name)
+    plot_scatter(val_labels, val_preds, "Validation Scatter Plot "+best_model_name)
+    plot_scatter(test_labels, test_preds, "Test Scatter Plot "+best_model_name)
 
     # Error distributions
-    plot_error_distribution(train_labels, train_preds, "Train Error Distribution")
-    plot_error_distribution(val_labels, val_preds, "Validation Error Distribution")
-    plot_error_distribution(test_labels, test_preds, "Test Error Distribution")
+    plot_error_distribution(train_labels, train_preds, "Train Error Distribution "+best_model_name)
+    plot_error_distribution(val_labels, val_preds, "Validation Error Distribution "+best_model_name)
+    plot_error_distribution(test_labels, test_preds, "Test Error Distribution "+best_model_name)
 
     print("Done")
 
+'''
+
+import matplotlib.pyplot as plt
+
+def visualize_tensor(tensor):
+    plt.figure()
+    plt.imshow(tensor, cmap='gray')  # 'gray' for grayscale. Remove if you want colormap
+    plt.colorbar()
+    plt.show()
+
+visualize_tensor(inputs[0].cpu().squeeze(0))
+visualize_tensor(inputs[1].cpu().squeeze(0))
+
+'''

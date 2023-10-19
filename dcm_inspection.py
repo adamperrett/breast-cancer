@@ -12,9 +12,10 @@ from scipy.stats import gaussian_kde
 
 sns.set(style='dark')
 
-parent_directory = 'data/procas_processed_sample'
+# parent_directory = 'data/procas_processed_sample'
+parent_directory = 'data/mosaics_processed'
 # parent_directory = 'data/procas_raw_sample'
-image_paths = glob.glob(os.path.join(parent_directory, '*/*PROCAS*.dcm'))
+image_paths = glob.glob(os.path.join(parent_directory, '*/*.dcm'))
 df = pd.DataFrame({'image_path': image_paths})
 
 def extract_identifier(filename):
