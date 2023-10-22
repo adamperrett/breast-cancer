@@ -1,8 +1,9 @@
 import torch
-from dadaptation import DAdaptAdam
+from dadaptation import DAdaptAdam, DAdaptSGD
 import os
 import re
 import pydicom
+import random
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -89,16 +90,17 @@ parent_directory = '../data/mosaics_processed'
 mosaic_data = pd.read_csv('../data/matched_mosaics.csv', sep=',')
 mosaic_ids = mosaic_data['Patient']
 vas_density_data = mosaic_data['VASCombinedAvDensity']
+study_type = mosaic_data['Study_type']
 
 processed = True
-processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0.pth'
+processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0_bs.pth'
 
-best_model_name = 'only_vas_0'
+best_model_name = 'rand_four_ResnetTransformer'
 
-# save mosaic_ids which have a vas score
+# save mosaic_ids which have a vas score and Study_type was Breast Screening
 id_vas_dict = {}
-for id, vas in zip(mosaic_ids, vas_density_data):
-    if not np.isnan(vas) and vas > 0:
+for id, vas, st in zip(mosaic_ids, vas_density_data, study_type):
+    if not np.isnan(vas) and vas > 0 and st == 'Breast Screening':
         id_vas_dict[id] = vas
 
 mosaic_ids = mosaic_ids.unique()
@@ -117,8 +119,9 @@ def pre_process_mammograms(mammographic_images, sides, heights, widths, pixel_si
 
         # Reshape and preprocess
         mammographic_image = np.reshape(mammographic_image, (height, width))
-        # otsu filter from skimage
-        # cut_off = filters.threshold_otsu(temp_image)
+        cut_off = mammographic_image > filters.threshold_otsu(mammographic_image)
+        cut_off = cut_off.astype(float)
+        mammographic_image = cut_off * mammographic_image
         new_height = int(np.ceil(height * pixel_size[0] / target_pixel_size))
         new_width = int(np.ceil(width * pixel_size[1] / target_pixel_size))
         max_intensity = np.amax(mammographic_image)
@@ -207,9 +210,10 @@ data_transforms = transforms.Compose([
 ])
 
 class MammogramDataset(Dataset):
-    def __init__(self, dataset_path, transform=None):
+    def __init__(self, dataset_path, transform=None, n=4):
         self.dataset = torch.load(dataset_path)
         self.transform = transform
+        self.n = n
 
     def __len__(self):
         return len(self.dataset)
@@ -217,8 +221,11 @@ class MammogramDataset(Dataset):
     def __getitem__(self, idx):
         image, label = self.dataset[idx]
         if self.transform:
-            transformed_image = [self.transform(im.unsqueeze(0)).squeeze(0) for im in image]
+            sample = random.sample(range(len(image)), self.n)
+            transformed_image = [self.transform(im.unsqueeze(0)).squeeze(0) for im in image[sample]]
             image = transformed_image
+        else:
+            image = image[:self.n]
         return image, label
 
 # Load dataset from saved path
@@ -238,7 +245,7 @@ train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=data_
 mean, std = compute_target_statistics(train_dataset)
 
 # Create DataLoaders
-batch_size = 2
+batch_size = 8
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
@@ -250,24 +257,26 @@ if __name__ == "__main__":
 
     # Initialize model, criterion, optimizer
     # model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
-    # model = ResNetTransformer().cuda()
+    model = ResNetTransformer().cuda()
     epsilon = 0.
-    model = TransformerModel(epsilon=epsilon).cuda()
+    # model = TransformerModel(epsilon=epsilon).cuda()
     criterion = nn.MSELoss()  # Mean squared error for regression
     lr = 1
     momentum = 0.9
     # optimizer = optim.Adam(model.parameters(), lr=lr)
-    optimizer = DAdaptAdam(model.parameters())
+    # optimizer = DAdaptAdam(model.parameters())
+    optimizer = DAdaptSGD(model.parameters())
     # optimizer = optim.SGD(model.parameters(),
     #                          lr=lr, momentum=momentum)
 
-    best_model_name += '_{}mda'.format(epsilon)
+    # best_model_name += '_{}mda_bs'.format(epsilon)
 
     # Training parameters
     num_epochs = 600
     patience = 600
     not_improved = 0
     best_val_loss = float('inf')
+    best_test_loss = float('inf')
     # scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/10), factor=0.9, verbose=True)
 
     print("Beginning training")
@@ -283,14 +292,14 @@ if __name__ == "__main__":
 
             # Forward + backward + optimize
             outputs = model(inputs.unsqueeze(1))  # Add channel dimension
-            loss = criterion(outputs.squeeze(), targets.float())
+            loss = criterion(outputs.squeeze(1), targets.float())
             loss.backward()
             optimizer.step()
 
             train_loss += loss.item() * inputs.size(0)
 
             with torch.no_grad():
-                train_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+                train_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(1), mean, std)
                 train_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
                 scaled_train_loss += criterion(train_outputs_original_scale, train_targets_original_scale).item() * inputs.size(0)
 
@@ -298,78 +307,44 @@ if __name__ == "__main__":
         scaled_train_loss /= len(train_loader.dataset)
 
         # Validation
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for inputs, targets in val_loader:  # Simplified unpacking
-                inputs, targets = inputs.cuda(), targets.cuda()
-                outputs = model(inputs.unsqueeze(1))
-                val_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
-                val_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-                loss = criterion(val_outputs_original_scale, val_targets_original_scale)
-                val_loss += loss.item() * inputs.size(0)
-        val_loss /= len(val_loader.dataset)
-
-        # print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
-        #       f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} with test loss {val_test_loss:.4f}")
+        val_loss, val_labels, val_preds, val_r2 = evaluate_model(model, val_loader, criterion,
+                                                                 inverse_standardize_targets, mean, std)
 
         # Check early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             not_improved = 0
             print("Validation loss improved. Saving best_model.")
-            torch.save(model.state_dict(), best_model_name)
-            val_test_loss = 0.0
-            with torch.no_grad():
-                for inputs, targets in test_loader:  # Simplified unpacking
-                    inputs, targets = inputs.cuda(), targets.cuda()
-                    outputs = model(inputs.unsqueeze(1))
-                    test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
-                    test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-                    loss = criterion(test_outputs_original_scale, test_targets_original_scale)
-                    val_test_loss += loss.item() * inputs.size(0)
-            val_test_loss /= len(test_loader.dataset)
+            torch.save(model.state_dict(), 'models/'+best_model_name)
+            val_test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
+                                                                         inverse_standardize_targets, mean, std)
+            best_test_loss = val_test_loss
             print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, "
-                  f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} with test loss {val_test_loss:.4f}")
+                  f"Test loss: {val_test_loss:.4f} "
+                  f"\nBest val: {best_val_loss:.4f} at epoch {epoch - not_improved} had test loss {best_test_loss:.4f}")
         else:
-            val_test_loss = 0.0
-            with torch.no_grad():
-                for inputs, targets in test_loader:  # Simplified unpacking
-                    inputs, targets = inputs.cuda(), targets.cuda()
-                    outputs = model(inputs.unsqueeze(1))
-                    test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
-                    test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-                    loss = criterion(test_outputs_original_scale, test_targets_original_scale)
-                    val_test_loss += loss.item() * inputs.size(0)
-            val_test_loss /= len(test_loader.dataset)
-            print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, "
-                  f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} with test loss {val_test_loss:.4f}")
+            val_test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
+                                                                         inverse_standardize_targets, mean, std)
             not_improved += 1
+            print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+                  f"Test loss: {val_test_loss:.4f} "
+                  f"\nBest val: {best_val_loss:.4f} at epoch {epoch - not_improved} had test loss {best_test_loss:.4f}")
             if not_improved >= patience:
                 print("Early stopping")
                 break
 
         # scheduler.step(val_loss)
 
-    # Test the best model
-    model.load_state_dict(torch.load(best_model_name))
-    model.eval()
+    # # Test the best model
+    # model.load_state_dict(torch.load('models/'+best_model_name))
+    #
+    # test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
+    #                                                                  inverse_standardize_targets, mean, std)
 
-    test_loss = 0.0
-    with torch.no_grad():
-        for inputs, targets in test_loader:  # Simplified unpacking
-            inputs, targets = inputs.cuda(), targets.cuda()
-            outputs = model(inputs.unsqueeze(1))
-            test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
-            test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-            loss = criterion(test_outputs_original_scale, test_targets_original_scale)
-            test_loss += loss.item() * inputs.size(0)
-    test_loss /= len(test_loader.dataset)
-
-    print(f"Test Loss: {test_loss:.4f}")
+    print(f"Test Loss: {val_test_loss:.4f}")
 
     print("Loading best model weights!")
-    model.load_state_dict(torch.load(best_model_name))
+    model.load_state_dict(torch.load('models/'+best_model_name))
 
     # Evaluating on all datasets: train, val, test
     train_loss, train_labels, train_preds, train_r2 = evaluate_model(model, train_loader, criterion, inverse_standardize_targets, mean, std)
@@ -380,6 +355,7 @@ if __name__ == "__main__":
     print(f"Train R2 Score: {train_r2:.4f}")
     print(f"Validation R2 Score: {val_r2:.4f}")
     print(f"Test R2 Score: {test_r2:.4f}")
+    print(f"Test Loss: {val_test_loss:.4f}")
 
     # Scatter plots
     plot_scatter(train_labels, train_preds, "Train Scatter Plot "+best_model_name)
