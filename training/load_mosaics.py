@@ -14,6 +14,7 @@ from torchvision.transforms.functional import pad
 from torchvision import transforms
 from tqdm import tqdm
 from skimage import filters
+from training.models import *
 
 
 seed_value = 272727
@@ -27,57 +28,6 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = False
 
 sns.set(style='dark')
-
-def plot_scatter(true_values, pred_values, title):
-    plt.figure(figsize=(10,6))
-    plt.scatter(true_values, pred_values, alpha=0.5)
-    plt.plot([min(true_values), max(true_values)], [min(true_values), max(true_values)], '--', lw=2)
-    plt.xlabel('True Values')
-    plt.ylabel('Predicted Values')
-    plt.title(title)
-    plt.show()
-
-def plot_error_distribution(true_values, pred_values, title):
-    errors = np.array(true_values) - np.array(pred_values)
-    sns.histplot(errors, bins=50, kde=True)
-    plt.xlabel('Error')
-    plt.ylabel('Count')
-    plt.title(title)
-    plt.show()
-
-def evaluate_model(model, dataloader, criterion):
-    model.eval()
-    running_loss = 0.0
-    all_targets = []
-    all_predictions = []
-
-    with torch.no_grad():
-        for inputs, targets in dataloader:
-            inputs, targets = inputs.cuda(), targets.cuda()
-            outputs = model(inputs.unsqueeze(1))
-            test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
-            test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-            loss = criterion(test_outputs_original_scale, test_targets_original_scale)
-            running_loss += loss.item() * inputs.size(0)
-
-            all_targets.extend(targets.cpu().numpy())
-            all_predictions.extend(outputs.cpu().numpy())
-
-    epoch_loss = running_loss / len(dataloader.dataset)
-    r2 = r2_score(all_targets, all_predictions)
-    return epoch_loss, all_targets, all_predictions, r2
-
-def compute_target_statistics(dataset):
-    labels = [label for _, label in dataset]
-    mean = np.mean(labels)
-    std = np.std(labels)
-    return mean, std
-
-def standardize_targets(target, mean, std):
-    return (target - mean) / std
-
-def inverse_standardize_targets(target, mean, std):
-    return target * std + mean
 
 def extract_identifier(filename):
     match = re.search(r'-([\d]+)-[A-Z]+', filename)
@@ -95,7 +45,7 @@ study_type = mosaic_data['Study_type']
 processed = True
 processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0_bs.pth'
 
-best_model_name = 'rand_four_ResnetTransformer'
+best_model_name = 'rand_eight_ResnetTransformer_balanced'
 
 # save mosaic_ids which have a vas score and Study_type was Breast Screening
 id_vas_dict = {}
@@ -168,7 +118,7 @@ def preprocess_and_zip_all_images(parent_directory, id_vas_dict):
 
 def custom_collate(batch):
     # Separate images and labels
-    images, labels = zip(*batch)
+    images, labels, weights = zip(*batch)
 
     # Determine the max combined width
     max_width = max([sum(img.size(-1) for img in img_list) for img_list in images])
@@ -191,7 +141,10 @@ def custom_collate(batch):
     labels_tensor = torch.tensor(labels, dtype=torch.float32)  # Change the dtype if needed
     labels_tensor = standardize_targets(labels_tensor, mean, std)
 
-    return images_tensor, labels_tensor
+    # if weights[0]:
+    return images_tensor, labels_tensor, torch.tensor(weights, dtype=torch.float32)
+    # else:
+    #     return images_tensor, labels_tensor, weights
 
 if not processed:
     # Generate the dataset and save it
@@ -210,25 +163,39 @@ data_transforms = transforms.Compose([
 ])
 
 class MammogramDataset(Dataset):
-    def __init__(self, dataset_path, transform=None, n=4):
+    def __init__(self, dataset_path, transform=None, n=2, weights=None, rand_select=True):
         self.dataset = torch.load(dataset_path)
         self.transform = transform
         self.n = n
+        self.weights = weights
+        self.rand_select = rand_select
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         image, label = self.dataset[idx]
-        if self.transform:
+        if len(image) < self.n:
+            for i in range(self.n - len(image)):
+                image = torch.vstack([image, torch.zeros_like(image[0]).unsqueeze(0)])
+        if self.rand_select:
             sample = random.sample(range(len(image)), self.n)
+        else:
+            sample = range(self.n)
+        if self.transform:
             transformed_image = [self.transform(im.unsqueeze(0)).squeeze(0) for im in image[sample]]
             image = transformed_image
         else:
-            image = image[:self.n]
-        return image, label
+            image = image[sample]
+
+        # If weights are provided, return them as well
+        if self.weights is not None:
+            return image, label, self.weights[idx]
+        else:
+            return image, label, 0
 
 # Load dataset from saved path
+print("Creating Dataset")
 dataset = MammogramDataset(processed_dataset_path)
 
 # Splitting the dataset
@@ -239,13 +206,24 @@ num_test = len(dataset) - num_train - num_val
 
 train_dataset, val_dataset, test_dataset = random_split(dataset, [num_train, num_val, num_test])
 
+# Compute weights for the training set
+targets = [label for _, label in train_dataset.dataset.dataset]
+sample_weights = compute_sample_weights(targets)
+
 # Applying the transform only to the training dataset
-train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=data_transforms)
+train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=data_transforms, weights=sample_weights)
 
 mean, std = compute_target_statistics(train_dataset)
 
+# from torch.utils.data import WeightedRandomSampler
+# sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(train_dataset))
+
+# Use this sampler in your DataLoader
+# train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler, collate_fn=custom_collate)
+
 # Create DataLoaders
-batch_size = 8
+print("Creating DataLoaders")
+batch_size = 16
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
@@ -253,14 +231,13 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, col
 
 
 if __name__ == "__main__":
-    from training.models import *
 
     # Initialize model, criterion, optimizer
     # model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
     model = ResNetTransformer().cuda()
     epsilon = 0.
     # model = TransformerModel(epsilon=epsilon).cuda()
-    criterion = nn.MSELoss()  # Mean squared error for regression
+    criterion = nn.MSELoss(reduction='none')  # Mean squared error for regression
     lr = 1
     momentum = 0.9
     # optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -284,24 +261,28 @@ if __name__ == "__main__":
         model.train()
         train_loss = 0.0
         scaled_train_loss = 0.0
-        for inputs, targets in train_loader:  # Simplified unpacking
-            inputs, targets = inputs.cuda(), targets.cuda()  # Send data to GPU
+        for inputs, targets, weights in train_loader:  # Simplified unpacking
+            inputs, targets, weights = inputs.cuda(), targets.cuda(), weights.cuda()  # Send data to GPU
 
             # Zero the parameter gradients
             optimizer.zero_grad()
 
-            # Forward + backward + optimize
+            # Forward
             outputs = model(inputs.unsqueeze(1))  # Add channel dimension
-            loss = criterion(outputs.squeeze(1), targets.float())
-            loss.backward()
+            losses = criterion(outputs.squeeze(1), targets.float())  # Get losses for each sample
+            weighted_loss = (losses * weights).mean()  # Weighted loss
+
+            # Backward + optimize
+            weighted_loss.backward()
             optimizer.step()
 
-            train_loss += loss.item() * inputs.size(0)
+            train_loss += weighted_loss.item() * inputs.size(0)
 
             with torch.no_grad():
                 train_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(1), mean, std)
                 train_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-                scaled_train_loss += criterion(train_outputs_original_scale, train_targets_original_scale).item() * inputs.size(0)
+                scaled_train_loss += criterion(train_outputs_original_scale,
+                                               train_targets_original_scale).mean().item() * inputs.size(0)
 
         train_loss /= len(train_loader.dataset)
         scaled_train_loss /= len(train_loader.dataset)
@@ -341,10 +322,10 @@ if __name__ == "__main__":
     # test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
     #                                                                  inverse_standardize_targets, mean, std)
 
-    print(f"Test Loss: {val_test_loss:.4f}")
-
     print("Loading best model weights!")
     model.load_state_dict(torch.load('models/'+best_model_name))
+
+    train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=None)
 
     # Evaluating on all datasets: train, val, test
     train_loss, train_labels, train_preds, train_r2 = evaluate_model(model, train_loader, criterion, inverse_standardize_targets, mean, std)
@@ -355,7 +336,7 @@ if __name__ == "__main__":
     print(f"Train R2 Score: {train_r2:.4f}")
     print(f"Validation R2 Score: {val_r2:.4f}")
     print(f"Test R2 Score: {test_r2:.4f}")
-    print(f"Test Loss: {val_test_loss:.4f}")
+    print(f"Test Loss: {test_loss:.4f}")
 
     # Scatter plots
     plot_scatter(train_labels, train_preds, "Train Scatter Plot "+best_model_name)

@@ -1,5 +1,5 @@
 import torch
-
+from dadaptation import DAdaptAdam, DAdaptSGD
 import os
 import random
 import re
@@ -12,8 +12,21 @@ import pandas as pd
 import seaborn as sns
 from skimage.transform import resize
 from torch.utils.data import Dataset, DataLoader, random_split
+from torchvision.transforms.functional import pad
+from torchvision import transforms
 from tqdm import tqdm
-from sklearn.metrics import r2_score
+from skimage import filters
+
+
+seed_value = 272727
+np.random.seed(seed_value)
+torch.manual_seed(seed_value)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(seed_value)
+    torch.cuda.manual_seed_all(seed_value)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 sns.set(style='dark')
 
@@ -81,9 +94,10 @@ mosaic_ids = mosaic_data['Patient']
 vas_density_data = mosaic_data['VASCombinedAvDensity']
 
 processed = True
-processed_dataset_path = '../data/mosaics_processed/dataset_sequential_0.pth'
+processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0_bs.pth'
 
-best_model_name = 'sequential_0'
+best_model_name = 'first_two_ResnetTransformer'
+# best_model_name = 'only_first_Transformer'
 
 # save mosaic_ids which have a vas score
 id_vas_dict = {}
@@ -162,6 +176,23 @@ def custom_collate(batch):
 
     return images_tensor, labels_tensor
 
+class MammogramDataset(Dataset):
+    def __init__(self, dir_datasets, transform=None):
+        # Flatten the list of datasets to have a single list of samples
+        self.transform = transform
+        self.dataset = []
+        for inputs, target in dir_datasets:
+                self.dataset.append([torch.cat(tuple(inputs[:2]), dim=-1), target])
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        image, label = self.dataset[idx]
+        if self.transform:
+            image = self.transform(image.unsqueeze(0)).squeeze(0)
+        return image, label
+
 if not processed:
     if not os.path.exists(processed_dataset_path):
         dir_datasets = preprocess_and_zip_per_directory(parent_directory, id_vas_dict)
@@ -178,22 +209,15 @@ num_test_dirs = len(dir_datasets) - num_train_dirs - num_val_dirs
 
 train_dirs, val_dirs, test_dirs = dir_datasets[:num_train_dirs], dir_datasets[num_train_dirs:num_train_dirs+num_val_dirs], dir_datasets[num_train_dirs+num_val_dirs:]
 
-class MammogramDataset(Dataset):
-    def __init__(self, dir_datasets):
-        # Flatten the list of datasets to have a single list of samples
-        self.dataset = []
-        for inputs, target in dir_datasets:
-            for i in inputs:
-                self.dataset.append([i, target])
-        # [[self.dataset.append([i, target]) for i in inputs] for inputs, target in dir_datasets]
+# Define your augmentations
+data_transforms = transforms.Compose([
+    transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10),
+    # Assuming images are PIL images; if not, you'll need to adjust or implement suitable transformations
+    transforms.RandomCrop(size=(10 * 64, 8 * 64), padding=4),
+    # Add any other desired transforms here
+])
 
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        return self.dataset[idx]
-
-train_dataset = MammogramDataset(train_dirs)
+train_dataset = MammogramDataset(train_dirs)#, transform=data_transforms)
 val_dataset = MammogramDataset(val_dirs)
 test_dataset = MammogramDataset(test_dirs)
 
@@ -214,27 +238,32 @@ if __name__ == "__main__":
     # Initialize model, criterion, optimizer
     # model = SimpleCNN().cuda()  # Assuming you have a GPU. If not, remove .cuda()
     model = ResNetTransformer().cuda()
-    # model = TransformerModel().cuda()
+    epsilon = 0.
+    # model = TransformerModel(epsilon=epsilon).cuda()
     criterion = nn.MSELoss()  # Mean squared error for regression
     lr = 0.001
     momentum = 0.9
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # optimizer = optim.Adam(model.parameters(), lr=lr)
+    # optimizer = DAdaptAdam(model.parameters())
+    optimizer = DAdaptSGD(model.parameters())
     # optimizer = optim.SGD(model.parameters(),
     #                          lr=lr, momentum=momentum)
 
-    best_model_name += '_{}s'.format(lr)
+    # best_model_name += '_{}s'.format(lr)
 
     # Training parameters
-    num_epochs = 300
-    patience = 60
+    num_epochs = 600
+    patience = 600
     not_improved = 0
     best_val_loss = float('inf')
-    scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/5), factor=0.75, verbose=True)
+    best_test_loss = float('inf')
+    # scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/10), factor=0.9, verbose=True)
 
     print("Beginning training")
     for epoch in tqdm(range(num_epochs)):
         model.train()
         train_loss = 0.0
+        scaled_train_loss = 0.0
         for inputs, targets in train_loader:  # Simplified unpacking
             inputs, targets = inputs.cuda(), targets.cuda()  # Send data to GPU
 
@@ -243,61 +272,59 @@ if __name__ == "__main__":
 
             # Forward + backward + optimize
             outputs = model(inputs.unsqueeze(1))  # Add channel dimension
-            loss = criterion(outputs.squeeze(), targets.float())
+            loss = criterion(outputs.squeeze(1), targets.float())
             loss.backward()
             optimizer.step()
 
             train_loss += loss.item() * inputs.size(0)
+
+            with torch.no_grad():
+                train_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(1), mean, std)
+                train_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
+                scaled_train_loss += criterion(train_outputs_original_scale, train_targets_original_scale).item() * inputs.size(0)
+
         train_loss /= len(train_loader.dataset)
+        scaled_train_loss /= len(train_loader.dataset)
 
         # Validation
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for inputs, targets in val_loader:  # Simplified unpacking
-                inputs, targets = inputs.cuda(), targets.cuda()
-                outputs = model(inputs.unsqueeze(1))
-                val_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
-                val_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-                loss = criterion(val_outputs_original_scale, val_targets_original_scale)
-                val_loss += loss.item() * inputs.size(0)
-        val_loss /= len(val_loader.dataset)
-
-        print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        val_loss, val_labels, val_preds, val_r2 = evaluate_model(model, val_loader, criterion,
+                                                                 inverse_standardize_targets, mean, std)
 
         # Check early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             not_improved = 0
             print("Validation loss improved. Saving best_model.")
-            torch.save(model.state_dict(), best_model_name)
+            torch.save(model.state_dict(), 'models/'+best_model_name)
+            val_test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
+                                                                         inverse_standardize_targets, mean, std)
+            best_test_loss = val_test_loss
+            print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+                  f"Test loss: {val_test_loss:.4f} "
+                  f"\nBest val: {best_val_loss:.4f} at epoch {epoch - not_improved} had test loss {best_test_loss:.4f}")
         else:
+            val_test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
+                                                                         inverse_standardize_targets, mean, std)
             not_improved += 1
+            print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+                  f"Test loss: {val_test_loss:.4f} "
+                  f"\nBest val: {best_val_loss:.4f} at epoch {epoch - not_improved} had test loss {best_test_loss:.4f}")
             if not_improved >= patience:
                 print("Early stopping")
                 break
 
-        scheduler.step(val_loss)
+        # scheduler.step(val_loss)
 
-    # Test the best model
-    model.load_state_dict(torch.load(best_model_name))
-    model.eval()
+    # # Test the best model
+    # model.load_state_dict(torch.load('models/'+best_model_name))
+    #
+    # test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
+    #                                                                  inverse_standardize_targets, mean, std)
 
-    test_loss = 0.0
-    with torch.no_grad():
-        for inputs, targets in test_loader:  # Simplified unpacking
-            inputs, targets = inputs.cuda(), targets.cuda()
-            outputs = model(inputs.unsqueeze(1))
-            test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
-            test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-            loss = criterion(test_outputs_original_scale, test_targets_original_scale)
-            test_loss += loss.item() * inputs.size(0)
-    test_loss /= len(test_loader.dataset)
-
-    print(f"Test Loss: {test_loss:.4f}")
+    print(f"Test Loss: {val_test_loss:.4f}")
 
     print("Loading best model weights!")
-    model.load_state_dict(torch.load(best_model_name))
+    model.load_state_dict(torch.load('models/'+best_model_name))
 
     # Evaluating on all datasets: train, val, test
     train_loss, train_labels, train_preds, train_r2 = evaluate_model(model, train_loader, criterion, inverse_standardize_targets, mean, std)
@@ -308,16 +335,17 @@ if __name__ == "__main__":
     print(f"Train R2 Score: {train_r2:.4f}")
     print(f"Validation R2 Score: {val_r2:.4f}")
     print(f"Test R2 Score: {test_r2:.4f}")
+    print(f"Test Loss: {val_test_loss:.4f}")
 
     # Scatter plots
-    plot_scatter(train_labels, train_preds, "Train Scatter Plot")
-    plot_scatter(val_labels, val_preds, "Validation Scatter Plot")
-    plot_scatter(test_labels, test_preds, "Test Scatter Plot")
+    plot_scatter(train_labels, train_preds, "Train Scatter Plot "+best_model_name)
+    plot_scatter(val_labels, val_preds, "Validation Scatter Plot "+best_model_name)
+    plot_scatter(test_labels, test_preds, "Test Scatter Plot "+best_model_name)
 
     # Error distributions
-    plot_error_distribution(train_labels, train_preds, "Train Error Distribution")
-    plot_error_distribution(val_labels, val_preds, "Validation Error Distribution")
-    plot_error_distribution(test_labels, test_preds, "Test Error Distribution")
+    plot_error_distribution(train_labels, train_preds, "Train Error Distribution "+best_model_name)
+    plot_error_distribution(val_labels, val_preds, "Validation Error Distribution "+best_model_name)
+    plot_error_distribution(test_labels, test_preds, "Test Error Distribution "+best_model_name)
 
     print("Done")
 

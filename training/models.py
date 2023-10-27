@@ -92,10 +92,15 @@ class ResNetTransformer(nn.Module):
 
 
 class PatchEmbedding(nn.Module):
-    def __init__(self, in_channels=1, patch_size=12, embed_dim=512, bias=True):
+    def __init__(self, in_channels=1, patch_size=24, embed_dim=512, bias=True):
         super().__init__()
         self.patch_size = patch_size
-        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias)
+        # self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias)
+        self.proj = nn.Conv2d(in_channels, embed_dim,
+                              kernel_size=(patch_size, patch_size),
+                              stride=(int(patch_size/1), int(patch_size/1)),
+                              padding=(patch_size, patch_size),
+                              bias=False)
         if not bias:
             nn.init.constant_(self.proj.weight, 1 / (patch_size * patch_size))
 
@@ -107,7 +112,7 @@ class PatchEmbedding(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.1, max_len=5120):
+    def __init__(self, d_model, dropout=0.1, max_len=640):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -125,7 +130,7 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, embed_dim=256, num_heads=8, num_layers=2, num_classes=1, epsilon=0):
+    def __init__(self, embed_dim=256, num_heads=8, num_layers=8, num_classes=1, epsilon=0):
         super(TransformerModel, self).__init__()
         self.patch_embed = PatchEmbedding(embed_dim=embed_dim)
         self.mask_generator = PatchEmbedding(embed_dim=embed_dim, bias=False)
@@ -164,7 +169,7 @@ class TransformerModel(nn.Module):
 
 
 def plot_scatter(true_values, pred_values, title):
-    plt.figure(figsize=(10,6))
+    plt.figure(figsize=(10, 6))
     plt.scatter(true_values, pred_values, alpha=0.5)
     plt.plot([min(true_values), max(true_values)], [min(true_values), max(true_values)], '--', lw=2)
     plt.xlabel('True Values')
@@ -173,8 +178,9 @@ def plot_scatter(true_values, pred_values, title):
     plt.show()
 
 def plot_error_distribution(true_values, pred_values, title):
+    plt.figure(figsize=(10, 6))
     errors = np.array(true_values) - np.array(pred_values)
-    sns.histplot(errors, bins=50, kde=True)
+    sns.histplot(errors, bins=20, kde=False)
     plt.xlabel('Error')
     plt.ylabel('Count')
     plt.title(title)
@@ -187,12 +193,12 @@ def evaluate_model(model, dataloader, criterion, inverse_standardize_targets, me
     all_predictions = []
 
     with torch.no_grad():
-        for inputs, targets in dataloader:
+        for inputs, targets, _ in dataloader:
             inputs, targets = inputs.cuda(), targets.cuda()
             outputs = model(inputs.unsqueeze(1))
-            test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(), mean, std)
+            test_outputs_original_scale = inverse_standardize_targets(outputs.squeeze(1), mean, std)
             test_targets_original_scale = inverse_standardize_targets(targets.float(), mean, std)
-            loss = criterion(test_outputs_original_scale, test_targets_original_scale)
+            loss = criterion(test_outputs_original_scale, test_targets_original_scale).mean()
             running_loss += loss.item() * inputs.size(0)
 
             all_targets.extend(test_targets_original_scale.cpu().numpy())
@@ -201,3 +207,35 @@ def evaluate_model(model, dataloader, criterion, inverse_standardize_targets, me
     epoch_loss = running_loss / len(dataloader.dataset)
     r2 = r2_score(all_targets, all_predictions)
     return epoch_loss, all_targets, all_predictions, r2
+
+def compute_target_statistics(dataset):
+    labels = [label for _, label, _ in dataset]
+    mean = np.mean(labels)
+    std = np.std(labels)
+    return mean, std
+
+def standardize_targets(target, mean, std):
+    return (target - mean) / std
+
+def inverse_standardize_targets(target, mean, std):
+    return target * std + mean
+
+
+def compute_sample_weights(targets, n_bins=20):
+    # Discretize the target variable into bins
+    bins = np.linspace(min(targets), max(targets), n_bins)
+    digitized = np.digitize(targets, bins)
+
+    # Compute weight for each bin
+    bin_counts = np.bincount(digitized, minlength=n_bins + 1)
+
+    # Set a minimum count for bins
+    min_count = 1  # setting this to 1 ensures no divide by zero issue
+    bin_counts = np.maximum(bin_counts, min_count)
+
+    bin_weights = 1. / bin_counts
+    bin_weights /= bin_weights.sum()
+
+    # Assign weight to each sample based on its bin
+    sample_weights = bin_weights[digitized]
+    return sample_weights

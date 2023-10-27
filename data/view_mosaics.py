@@ -29,13 +29,13 @@ class MammogramDataset(Dataset):
             image = transformed_image
         return image, label
 
-processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0.pth'
+processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0_bs.pth'
 # Load dataset from saved path
 dataset = MammogramDataset(processed_dataset_path)
 
 all_data = [[im, vas] for im, vas in dataset]
 
-n = 3
+n = 6
 
 # Sort all_data based on vas score
 sorted_data = sorted(all_data, key=lambda x: x[1])
@@ -48,19 +48,62 @@ n_largest = sorted_data[-n:]
 result_data = n_smallest + n_largest
 
 # Split into images and vas scores if needed
-result_images = [entry[0] for entry in result_data]
-result_vas_scores = [entry[1] for entry in result_data]
+result_small_images = [entry[0] for entry in result_data]
+result_small_vas_scores = [entry[1] for entry in result_data]
 
 import matplotlib.pyplot as plt
 
-def visualize_tensor(tensor, vas):
-    plt.figure()
-    plt.imshow(torch.cat(tensor.unbind(0), dim=-1), cmap='gray')  # 'gray' for grayscale. Remove if you want colormap
-    plt.title(vas)
-    plt.colorbar()
-    plt.show()
+def visualize_tensor(tensor_and_vas):
+    # combined_image = torch.cat(tensor.unbind(0), dim=-1)
 
-for im, vas in zip(result_images, result_vas_scores):
-    visualize_tensor(im, vas)
+    # Create a figure with 1 row and 2 columns
+    fig, axs = plt.subplots(int(len(tensor_and_vas)/2), 2, figsize=(16, 9))
+
+    # Display the combined_image on the first subplot
+    # axs[0].imshow(combined_image, cmap='gray')
+    # axs[0].set_title(f'Combined Image - {vas}')
+    # axs[0].axis('off')
+
+    vas_scores = []
+    for i, (t, v) in enumerate(tensor_and_vas):
+        vas_scores.append(v)
+        t = torch.cat(t.unbind(0), dim=-1)
+        axs[int(i/2)][i%2].imshow(t, cmap='gray')
+        axs[int(i/2)][i%2].set_title(f'VAS - {v}')
+        axs[int(i/2)][i%2].axis('off')
+
+    # Threshold the combined_image using Otsu's method
+    # cut_off = combined_image > filters.threshold_otsu(combined_image.numpy())
+    # cut_off = cut_off.float()
+    # thresholded_image = cut_off * combined_image
+    #
+    # # Display the thresholded image on the second subplot
+    # axs[1].imshow(thresholded_image, cmap='gray')
+    # axs[1].set_title(f'Thresholded Image - {vas}')
+    # axs[1].axis('off')
+
+    # Add colorbar for the thresholded image (optional)
+    # fig.colorbar(im, ax=axs[1])
+
+    plt.tight_layout()
+    plt.savefig("../data/mosaic_images/VAS{}.png".format(vas_scores), bbox_inches='tight',
+                # dpi=200,
+                format='png')
+    # plt.show()
+    plt.close()
+
+# for im, vas in sorted_data:
+#     visualize_tensor(im, vas)
+# for im, vas in sorted_data:
+#     #view in temporal order
+#     visualize_tensor(im, vas)
+
+pbar = tqdm(total=len(sorted_data)/n)
+im = 0
+while im < len(sorted_data):
+    visualize_tensor(sorted_data[im:im+n])
+    im += n
+    pbar.update(1)
+pbar.close()
 
 print("done")
