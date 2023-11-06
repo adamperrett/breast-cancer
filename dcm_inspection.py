@@ -2,6 +2,7 @@ import os
 import random
 import glob
 import re
+from tqdm import tqdm
 
 import pydicom
 import matplotlib.pyplot as plt
@@ -12,8 +13,9 @@ from scipy.stats import gaussian_kde
 
 sns.set(style='dark')
 
-parent_directory = 'data/procas_processed_sample'
-# parent_directory = 'data/mosaics_processed'
+# parent_directory = 'data/procas_processed_sample'
+# parent_directory = 'D:/mosaic_data/raw'
+parent_directory = 'data/mosaics_processed'
 # parent_directory = 'data/procas_raw_sample'
 image_paths = glob.glob(os.path.join(parent_directory, '*/*.dcm'))
 df = pd.DataFrame({'image_path': image_paths})
@@ -26,7 +28,7 @@ def extract_identifier(filename):
 df['identifier'] = df['image_path'].apply(lambda x: extract_identifier(os.path.basename(x)))
 
 data = []
-for path in df['image_path']:
+for path in tqdm(df['image_path']):
     dicom_data = pydicom.dcmread(path, force=True)
     if hasattr(dicom_data, 'pixel_array'):
         data.append(dicom_data.pixel_array.shape)

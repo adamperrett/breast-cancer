@@ -29,7 +29,11 @@ class MammogramDataset(Dataset):
             image = transformed_image
         return image, label
 
-processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0_bs.pth'
+# processed_dataset_path = '../data/mosaics_processed/dataset_only_vas_0_bs.pth'
+# processed_dataset_path = '../data/mosaics_processed/full_dataset.pth'
+prepro_type = 'log'
+processed_dataset_path = '../data/mosaics_processed/full_mosaic_dataset_'+prepro_type+'.pth'
+save_location = 'D:/mosaic_data/raw/images/'+prepro_type
 # Load dataset from saved path
 dataset = MammogramDataset(processed_dataset_path)
 
@@ -53,11 +57,11 @@ result_small_vas_scores = [entry[1] for entry in result_data]
 
 import matplotlib.pyplot as plt
 
-def visualize_tensor(tensor_and_vas):
+def visualize_tensor(tensor_and_vas, save=True):
     # combined_image = torch.cat(tensor.unbind(0), dim=-1)
 
     # Create a figure with 1 row and 2 columns
-    fig, axs = plt.subplots(int(len(tensor_and_vas)/2), 2, figsize=(16, 9))
+    fig, axs = plt.subplots(int(n/2), 2, figsize=(16, 9))
 
     # Display the combined_image on the first subplot
     # axs[0].imshow(combined_image, cmap='gray')
@@ -86,11 +90,13 @@ def visualize_tensor(tensor_and_vas):
     # fig.colorbar(im, ax=axs[1])
 
     plt.tight_layout()
-    plt.savefig("../data/mosaic_images/VAS{}.png".format(vas_scores), bbox_inches='tight',
-                # dpi=200,
-                format='png')
-    # plt.show()
-    plt.close()
+    if save:
+        plt.savefig(save_location+"VAS{}.png".format(vas_scores), bbox_inches='tight',
+                    # dpi=200,
+                    format='png')
+        plt.close()
+    else:
+        plt.show()
 
 # for im, vas in sorted_data:
 #     visualize_tensor(im, vas)

@@ -168,22 +168,30 @@ class TransformerModel(nn.Module):
         return x
 
 
-def plot_scatter(true_values, pred_values, title):
+def plot_scatter(true_values, pred_values, title, save_location=None):
     plt.figure(figsize=(10, 6))
     plt.scatter(true_values, pred_values, alpha=0.5)
     plt.plot([min(true_values), max(true_values)], [min(true_values), max(true_values)], '--', lw=2)
     plt.xlabel('True Values')
     plt.ylabel('Predicted Values')
     plt.title(title)
+    if save_location:
+        plt.savefig(save_location+"/{}.png".format(title), bbox_inches='tight',
+                    # dpi=200,
+                    format='png')
     plt.show()
 
-def plot_error_distribution(true_values, pred_values, title):
+def plot_error_distribution(true_values, pred_values, title, save_location=None):
     plt.figure(figsize=(10, 6))
     errors = np.array(true_values) - np.array(pred_values)
     sns.histplot(errors, bins=20, kde=False)
     plt.xlabel('Error')
     plt.ylabel('Count')
     plt.title(title)
+    if save_location:
+        plt.savefig(save_location+"/{}.png".format(title), bbox_inches='tight',
+                    # dpi=200,
+                    format='png')
     plt.show()
 
 def evaluate_model(model, dataloader, criterion, inverse_standardize_targets, mean, std):
@@ -221,13 +229,18 @@ def inverse_standardize_targets(target, mean, std):
     return target * std + mean
 
 
-def compute_sample_weights(targets, n_bins=20):
+def compute_sample_weights(targets, n_bins=20, only_bins=False, minv=0, maxv=2**14):
     # Discretize the target variable into bins
-    bins = np.linspace(min(targets), max(targets), n_bins)
+    if only_bins:
+        bins = np.linspace(minv, maxv, n_bins)
+    else:
+        bins = np.linspace(min(targets), max(targets), n_bins)
     digitized = np.digitize(targets, bins)
 
     # Compute weight for each bin
     bin_counts = np.bincount(digitized, minlength=n_bins + 1)
+    if only_bins:
+        return bin_counts
 
     # Set a minimum count for bins
     min_count = 1  # setting this to 1 ensures no divide by zero issue
