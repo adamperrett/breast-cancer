@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import time
 from skimage.transform import resize
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision.transforms.functional import pad
@@ -17,7 +18,8 @@ from tqdm import tqdm
 from skimage import filters
 from training.models import *
 
-
+# time.sleep(60*60*14)
+print(time.localtime())
 seed_value = 272727
 np.random.seed(seed_value)
 torch.manual_seed(seed_value)
@@ -39,27 +41,32 @@ print("Reading data")
 image_directory = 'D:/mosaic_data/raw'
 csv_directory = 'C:/Users/adam_/PycharmProjects/breast-cancer/data'
 csv_name = 'full_procas_info3.csv'
-
-mosaic_data = pd.read_csv(os.path.join(csv_directory, csv_name), sep=',')
-mosaic_ids = mosaic_data['Unnamed: 0']
-vas_density_data = mosaic_data['VASCombinedAvDensity']
+reference_csv = 'PROCAS_reference.csv'
 
 processed = True
-# processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_scaled_dataset.pth')
-processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_histo.pth')
-image_statistics_pre = []
-image_statistics_post = []
+# processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_proc.pth')
+processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_log.pth')
 
 results_dir = 'C:/Users/adam_/PycharmProjects/breast-cancer/training/results'
-best_model_name = 'histo_rand_two_ResnetTransformer'
+best_model_name = 'proc_weighted_rand_two_ResnetTransformer'
 
-# save mosaic_ids which have a vas score and Study_type was Breast Screening
-id_vas_dict = {}
-for id, vas in zip(mosaic_ids, vas_density_data):
-    if not np.isnan(vas) and vas > 0:
-        id_vas_dict["PROCAS_ALL_{:05}".format(id)] = vas
+if not processed:
+    mosaic_data = pd.read_csv(os.path.join(csv_directory, csv_name), sep=',')
+    mosaic_ids = mosaic_data['ProcID']
+    vas_density_data = mosaic_data['VASCombinedAvDensity']
 
-mosaic_ids = mosaic_ids.unique()
+    reference_data = pd.read_csv(os.path.join(csv_directory, reference_csv), sep=',')
+    reference_ids = reference_data['ProcID']
+    if 'raw' in image_directory:
+        im_ids = reference_data['ASSURE_RAW_ID']
+    else:
+        im_ids = reference_data['ASSURE_PROCESSED_ANON_ID']
+    raw_PROC_id_dict = {}
+    for ref, id in zip(reference_ids, im_ids):
+        if not np.isnan(id):
+            raw_PROC_id_dict[ref] = int(id)
+
+    mosaic_ids = mosaic_ids.unique()
 
 def pre_process_mammograms(mammographic_images, sides, heights, widths, pixel_sizes, image_types):
     target_pixel_size = 0.0941
@@ -75,16 +82,9 @@ def pre_process_mammograms(mammographic_images, sides, heights, widths, pixel_si
         image_type = image_types[idx]
 
         # Reshape and preprocess
-        mammographic_image = np.reshape(mammographic_image, (height, width))
-        new_height = int(np.ceil(height * pixel_size[0] / target_pixel_size))
-        new_width = int(np.ceil(width * pixel_size[1] / target_pixel_size))
-        max_intensity = np.amax(mammographic_image)
-        mammographic_image = resize(mammographic_image, (new_height, new_width))
-        mammographic_image = mammographic_image * max_intensity / np.amax(mammographic_image)
         if side == 'R':
             mammographic_image = np.fliplr(mammographic_image)
         if image_type == 'raw':
-            image_statistics_pre.append(compute_sample_weights(np.ravel(mammographic_image), n_bins=100, only_bins=True))
             mammographic_image += (mammographic_image == 0.0).astype(int) * 1
             mammographic_image = np.log(mammographic_image)
             mammographic_image = np.amax(mammographic_image) - mammographic_image
@@ -95,11 +95,6 @@ def pre_process_mammograms(mammographic_images, sides, heights, widths, pixel_si
         padded_image[:mammographic_image.shape[0], :mammographic_image.shape[1]] = mammographic_image
         mammographic_image = resize(padded_image[:2995, :2394], (10 * 64, 8 * 64))
         mammographic_image = mammographic_image / np.amax(mammographic_image)
-        image_statistics_pre.append(compute_sample_weights(np.ravel(mammographic_image),
-                                                           n_bins=100,
-                                                           only_bins=True,
-                                                           minv=0,
-                                                           maxv=1))
         processed_images.append(mammographic_image)
     return torch.stack([torch.from_numpy(img).float() for img in processed_images], dim=0)
 
@@ -134,7 +129,7 @@ def preprocess_and_zip_all_images(parent_directory, id_vas_dict):
         if any(num > 4000 for num in all_widths):
             continue
         all_pixel_sizes = [(0.0941, 0.0941) for _ in all_images]
-        all_image_types = ['raw' if ('raw' in patient_path or 'RAW' in patient_path or '_PROC_' not in patient_path)
+        all_image_types = ['raw' if ('raw' in patient_path or 'RAW' in patient_path or '_PROC' not in patient_path)
                            else 'processed' for _ in image_files]
 
         preprocessed_images = pre_process_mammograms(all_images, all_sides, all_heights, all_widths, all_pixel_sizes,
@@ -177,7 +172,7 @@ def custom_collate(batch):
 if not processed:
     # Generate the dataset and save it
     if not os.path.exists(processed_dataset_path):
-        dataset_entries = preprocess_and_zip_all_images(image_directory, id_vas_dict)
+        dataset_entries = preprocess_and_zip_all_images(image_directory, raw_PROC_id_dict)
         torch.save(dataset_entries, processed_dataset_path)
 
 
@@ -235,12 +230,12 @@ num_test = len(dataset) - num_train - num_val
 train_dataset, val_dataset, test_dataset = random_split(dataset, [num_train, num_val, num_test])
 
 # Compute weights for the training set
-# targets = [label for _, label in train_dataset.dataset.dataset]
-# sample_weights = compute_sample_weights(targets)
-sample_weights = None
+targets = [label for _, label in train_dataset.dataset.dataset]
+sample_weights = compute_sample_weights(targets)
+# sample_weights = None
 
 # Applying the transform only to the training dataset
-train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=data_transforms)#, weights=sample_weights)
+train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=data_transforms, weights=sample_weights)
 
 mean, std = compute_target_statistics(train_dataset)
 
@@ -331,7 +326,7 @@ if __name__ == "__main__":
               f"\nTrain Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, Test loss: {val_test_loss:.4f}"
               f"\nTrain R2: {train_r2:.4f}, Val R2: {val_r2:.4f}, Test R2: {test_r2:.4f}")
 
-        writer.add_scalar('Loss/Train', train_loss, epoch)
+        writer.add_scalar('Loss/Train', scaled_train_loss, epoch)
         writer.add_scalar('R2/Train', train_r2, epoch)
         writer.add_scalar('Loss/Validation', val_loss, epoch)
         writer.add_scalar('R2/Validation', val_r2, epoch)
@@ -379,6 +374,11 @@ if __name__ == "__main__":
     plot_scatter(train_labels, train_preds, "Train Scatter Plot "+best_model_name, results_dir)
     plot_scatter(val_labels, val_preds, "Validation Scatter Plot "+best_model_name, results_dir)
     plot_scatter(test_labels, test_preds, "Test Scatter Plot "+best_model_name, results_dir)
+
+    # Error distributions
+    plot_error_vs_vas(train_labels, train_preds, "Train Error vs VAS "+best_model_name, results_dir)
+    plot_error_vs_vas(val_labels, val_preds, "Validation Error vs VAS "+best_model_name, results_dir)
+    plot_error_vs_vas(test_labels, test_preds, "Test Error vs VAS "+best_model_name, results_dir)
 
     # Error distributions
     plot_error_distribution(train_labels, train_preds, "Train Error Distribution "+best_model_name, results_dir)

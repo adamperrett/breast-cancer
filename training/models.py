@@ -181,6 +181,19 @@ def plot_scatter(true_values, pred_values, title, save_location=None):
                     format='png')
     plt.show()
 
+def plot_error_vs_vas(true_values, pred_values, title, save_location=None):
+    plt.figure(figsize=(10, 6))
+    errors = np.array(true_values) - np.array(pred_values)
+    plt.scatter(true_values, errors, alpha=0.5)
+    plt.xlabel('VAS')
+    plt.ylabel('Error')
+    plt.title(title)
+    if save_location:
+        plt.savefig(save_location+"/{}.png".format(title), bbox_inches='tight',
+                    # dpi=200,
+                    format='png')
+    plt.show()
+
 def plot_error_distribution(true_values, pred_values, title, save_location=None):
     plt.figure(figsize=(10, 6))
     errors = np.array(true_values) - np.array(pred_values)
@@ -243,8 +256,9 @@ def compute_sample_weights(targets, n_bins=20, only_bins=False, minv=0, maxv=2**
         return bin_counts
 
     # Set a minimum count for bins
-    min_count = 1  # setting this to 1 ensures no divide by zero issue
-    bin_counts = np.maximum(bin_counts, min_count)
+    # min_count = 1  # setting this to 1 ensures no divide by zero issue
+    # bin_counts = np.maximum(bin_counts, min_count)
+    bin_counts += 20
 
     bin_weights = 1. / bin_counts
     bin_weights /= bin_weights.sum()
