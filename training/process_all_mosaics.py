@@ -80,8 +80,8 @@ if on_CSF:
     weighted = config['weighted']
     transformed = config['transformed']
 
-    results_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/training/results'
-    best_model_name = '{}_{}_{}_t{}_w{}_js{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted, int(sys.argv[1]) - 1)
+    working_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/training/'
+    best_model_name = '{}_{}_{}_t{}_w{}_js{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted, int(sys.argv[1]))
 
     print("Config", int(sys.argv[1]) + 1, "creates test", best_model_name)
 else:
@@ -98,7 +98,7 @@ else:
     # processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_proc.pth')
     processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_log.pth')
 
-    results_dir = 'C:/Users/adam_/PycharmProjects/breast-cancer/training/results'
+    working_dir = 'C:/Users/adam_/PycharmProjects/breast-cancer/training/'
     best_model_name = 'log_adam_rand_two_ResnetTransformer'
 
 
@@ -395,7 +395,7 @@ if __name__ == "__main__":
     best_val_loss = float('inf')
     best_test_loss = float('inf')
     # scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/10), factor=0.9, verbose=True)
-    writer = SummaryWriter(results_dir+'/tb_'+best_model_name)
+    writer = SummaryWriter(working_dir+'/results/tb_'+best_model_name)
 
     print("Beginning training")
     for epoch in tqdm(range(num_epochs)):
@@ -456,9 +456,9 @@ if __name__ == "__main__":
             best_val_loss = val_loss
             not_improved = 0
             print("Validation loss improved. Saving best_model.")
-            torch.save(model.state_dict(), 'models/'+best_model_name)
             best_test_loss = val_test_loss
             print(f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} had test loss {best_test_loss:.4f}")
+            torch.save(model.state_dict(), working_dir+'/models/'+best_model_name)
         else:
             not_improved += 1
             print(f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} had test loss {best_test_loss:.4f}")
@@ -471,7 +471,7 @@ if __name__ == "__main__":
 
     writer.close()
     print("Loading best model weights!")
-    model.load_state_dict(torch.load('models/'+best_model_name))
+    model.load_state_dict(torch.load(working_dir+'/models/'+best_model_name))
 
     train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=None)
 
@@ -489,19 +489,19 @@ if __name__ == "__main__":
     print(f"Test Loss: {test_loss:.4f}")
 
     # Scatter plots
-    plot_scatter(train_labels, train_preds, "Train Scatter Plot "+best_model_name, results_dir)
-    plot_scatter(val_labels, val_preds, "Validation Scatter Plot "+best_model_name, results_dir)
-    plot_scatter(test_labels, test_preds, "Test Scatter Plot "+best_model_name, results_dir)
+    plot_scatter(train_labels, train_preds, "Train Scatter Plot "+best_model_name, working_dir+'/results/')
+    plot_scatter(val_labels, val_preds, "Validation Scatter Plot "+best_model_name, working_dir+'/results/')
+    plot_scatter(test_labels, test_preds, "Test Scatter Plot "+best_model_name, working_dir+'/results/')
 
     # Error distributions
-    plot_error_vs_vas(train_labels, train_preds, "Train Error vs VAS "+best_model_name, results_dir)
-    plot_error_vs_vas(val_labels, val_preds, "Validation Error vs VAS "+best_model_name, results_dir)
-    plot_error_vs_vas(test_labels, test_preds, "Test Error vs VAS "+best_model_name, results_dir)
+    plot_error_vs_vas(train_labels, train_preds, "Train Error vs VAS "+best_model_name, working_dir+'/results/')
+    plot_error_vs_vas(val_labels, val_preds, "Validation Error vs VAS "+best_model_name, working_dir+'/results/')
+    plot_error_vs_vas(test_labels, test_preds, "Test Error vs VAS "+best_model_name, working_dir+'/results/')
 
     # Error distributions
-    plot_error_distribution(train_labels, train_preds, "Train Error Distribution "+best_model_name, results_dir)
-    plot_error_distribution(val_labels, val_preds, "Validation Error Distribution "+best_model_name, results_dir)
-    plot_error_distribution(test_labels, test_preds, "Test Error Distribution "+best_model_name, results_dir)
+    plot_error_distribution(train_labels, train_preds, "Train Error Distribution "+best_model_name, working_dir+'/results/')
+    plot_error_distribution(val_labels, val_preds, "Validation Error Distribution "+best_model_name, working_dir+'/results/')
+    plot_error_distribution(test_labels, test_preds, "Test Error Distribution "+best_model_name, working_dir+'/results/')
 
     print("Done")
 
