@@ -3,7 +3,6 @@
 #$ -pe smp.pe 4
 #$ -l nvidia_v100=1
 #$ -m ea
-#$ -M adam.perrett@manchester.ac.uk
 #$ -t 1-96
 
 module load apps/binapps/anaconda3/4.2.0
