@@ -258,7 +258,7 @@ def compute_sample_weights(targets, n_bins=20, only_bins=False, minv=0, maxv=2**
     # Set a minimum count for bins
     # min_count = 1  # setting this to 1 ensures no divide by zero issue
     # bin_counts = np.maximum(bin_counts, min_count)
-    bin_counts += 20
+    bin_counts += 10
 
     bin_weights = 1. / bin_counts
     bin_weights /= bin_weights.sum()

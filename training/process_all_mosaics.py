@@ -1,5 +1,6 @@
 import torch
 from dadaptation import DAdaptAdam, DAdaptSGD
+import sys
 import os
 import re
 import pydicom
@@ -23,7 +24,6 @@ print(time.localtime())
 seed_value = 272727
 np.random.seed(seed_value)
 torch.manual_seed(seed_value)
-
 if torch.cuda.is_available():
     torch.cuda.manual_seed(seed_value)
     torch.cuda.manual_seed_all(seed_value)
@@ -38,17 +38,66 @@ def extract_identifier(filename):
 
 print("Reading data")
 
-image_directory = 'D:/mosaic_data/raw'
-csv_directory = 'C:/Users/adam_/PycharmProjects/breast-cancer/data'
-csv_name = 'full_procas_info3.csv'
-reference_csv = 'PROCAS_reference.csv'
+on_CSF = True
 
-processed = True
-# processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_proc.pth')
-processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_log.pth')
+if on_CSF:
+    '''
+    Test across:
+    -dataset 4
+    -batch_size n
+    -optimiser 2
+    -weights 2
+    -transformed 2
+    '''
+    configurations = []
+    for d_set in ['proc', 'log', 'histo', 'clahe']:
+        for b_size in [32, 64, 128]:
+            for op_choice in ['adam', 'sgd']:
+                for weight_choice in [True, False]:
+                    for trans_choice in [True, False]:
+                        configurations.append({
+                            'dataset': d_set,
+                            'batch_size': b_size,
+                            'optimizer': op_choice,
+                            'weighted': weight_choice,
+                            'transformed': trans_choice
+                        })
 
-results_dir = 'C:/Users/adam_/PycharmProjects/breast-cancer/training/results'
-best_model_name = 'proc_weighted_rand_two_ResnetTransformer'
+    config = int(sys.argv[1])
+    processed = True
+    dataset_dir = ''
+    config = configurations[config]
+    processed_dataset_path = os.path.join(dataset_dir,
+                                          'mosaics_processed/full_mosaic_dataset_{}.pth'.format(config['dataset']))
+    batch_size = config['batch_size']
+    op_choice = config['optimizer']
+    weighted = config['weighted']
+    transformed = config['transformed']
+
+    results_dir = ''
+    best_model_name = '{}_{}_{}_t{}_w{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted)
+else:
+    processed = True
+    batch_size = 16
+    op_choice = 'adam'
+    weighted = False
+    transformed = True
+    image_directory = 'D:/mosaic_data/raw'
+    csv_directory = 'C:/Users/adam_/PycharmProjects/breast-cancer/data'
+    csv_name = 'full_procas_info3.csv'
+    reference_csv = 'PROCAS_reference.csv'
+
+    # processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_proc.pth')
+    processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_log.pth')
+
+    results_dir = 'C:/Users/adam_/PycharmProjects/breast-cancer/training/results'
+    best_model_name = 'log_adam_rand_two_ResnetTransformer'
+
+
+
+no_study_files = []
+bad_study_files = []
+bad_images = []
 
 if not processed:
     mosaic_data = pd.read_csv(os.path.join(csv_directory, csv_name), sep=',')
@@ -61,10 +110,17 @@ if not processed:
         im_ids = reference_data['ASSURE_RAW_ID']
     else:
         im_ids = reference_data['ASSURE_PROCESSED_ANON_ID']
+
     raw_PROC_id_dict = {}
     for ref, id in zip(reference_ids, im_ids):
         if not np.isnan(id):
             raw_PROC_id_dict[ref] = int(id)
+
+    id_vas_dict = {}
+    for id, vas in zip(mosaic_ids, vas_density_data):
+        if not np.isnan(vas) and vas > 0 and id in raw_PROC_id_dict:
+            raw_id = raw_PROC_id_dict[id]
+            id_vas_dict["{:05}".format(raw_id)] = vas
 
     mosaic_ids = mosaic_ids.unique()
 
@@ -95,14 +151,18 @@ def pre_process_mammograms(mammographic_images, sides, heights, widths, pixel_si
         padded_image[:mammographic_image.shape[0], :mammographic_image.shape[1]] = mammographic_image
         mammographic_image = resize(padded_image[:2995, :2394], (10 * 64, 8 * 64))
         mammographic_image = mammographic_image / np.amax(mammographic_image)
-        processed_images.append(mammographic_image)
+        if np.sum(np.isnan(mammographic_image)) == 0:
+            processed_images.append(mammographic_image)
+        else:
+            print("Bad nan image")
     return torch.stack([torch.from_numpy(img).float() for img in processed_images], dim=0)
 
 # This function will preprocess and zip all images and return a dataset ready for saving
 def preprocess_and_zip_all_images(parent_directory, id_vas_dict):
     dataset_entries = []
 
-    patient_dirs = [d for d in os.listdir(parent_directory) if d in id_vas_dict]
+    # patient_dirs = [d for d in os.listdir(parent_directory) if d in id_vas_dict]
+    patient_dirs = [d for d in os.listdir(parent_directory) if d[-5:] in id_vas_dict]
     patient_dirs.sort()  # Ensuring a deterministic order
 
     for patient_dir in tqdm(patient_dirs):
@@ -111,16 +171,55 @@ def preprocess_and_zip_all_images(parent_directory, id_vas_dict):
 
         # Load all images for the given patient/directory
         dcm_files = [pydicom.dcmread(os.path.join(patient_path, f), force=True) for f in image_files]
+        try:
+            all_images = [dcm.pixel_array for dcm in dcm_files]
+            if np.sum([np.sum(im) == 0 for im in all_images]):
+                bad_images.append([patient_dir, dcm_files])
+                continue
+        except:
+            continue
         if not all([hasattr(dcm, 'StudyDescription') for dcm in dcm_files]):
             print("StudyDescription attribute missing")
+            all_sides = ['L' if 'LCC' in f or 'LMLO' in f else 'R' for f in image_files]
+            all_heights = [img.shape[0] for img in all_images]
+            if any(num > 4000 for num in all_heights):
+                continue
+            all_widths = [img.shape[1] for img in all_images]
+            if any(num > 4000 for num in all_widths):
+                continue
+            all_pixel_sizes = [(0.0941, 0.0941) for _ in all_images]
+            all_image_types = ['raw' if ('raw' in patient_path or 'RAW' in patient_path or '_PROC' not in patient_path)
+                               else 'processed' for _ in image_files]
+
+            preprocessed_images = pre_process_mammograms(all_images, all_sides, all_heights, all_widths, all_pixel_sizes,
+                                                         all_image_types)
+
+            no_study_files.append([preprocessed_images, patient_dir, dcm_files])
         else:
             studies = [dcm.StudyDescription for dcm in dcm_files]
             if any(s != 'Breast Screening' and
                    s != 'XR MAMMOGRAM BILATERAL' and
                    s != 'BILATERAL MAMMOGRAMS 2 VIEWS' for s in studies):
                 print("Skipped because not all breast screening - studies =", studies)
+                all_sides = ['L' if 'LCC' in f or 'LMLO' in f else 'R' for f in image_files]
+                all_heights = [img.shape[0] for img in all_images]
+                if any(num > 4000 for num in all_heights):
+                    continue
+                all_widths = [img.shape[1] for img in all_images]
+                if any(num > 4000 for num in all_widths):
+                    continue
+                all_pixel_sizes = [(0.0941, 0.0941) for _ in all_images]
+                all_image_types = [
+                    'raw' if ('raw' in patient_path or 'RAW' in patient_path or '_PROC' not in patient_path)
+                    else 'processed' for _ in image_files]
+
+                preprocessed_images = pre_process_mammograms(all_images, all_sides, all_heights, all_widths,
+                                                             all_pixel_sizes,
+                                                             all_image_types)
+
+                bad_study_files.append([preprocessed_images, patient_dir, dcm_files, studies])
                 continue
-        all_images = [dcm.pixel_array for dcm in dcm_files]
+        # all_images = [dcm.pixel_array for dcm in dcm_files]
         all_sides = ['L' if 'LCC' in f or 'LMLO' in f else 'R' for f in image_files]
         all_heights = [img.shape[0] for img in all_images]
         if any(num > 4000 for num in all_heights):
@@ -135,7 +234,7 @@ def preprocess_and_zip_all_images(parent_directory, id_vas_dict):
         preprocessed_images = pre_process_mammograms(all_images, all_sides, all_heights, all_widths, all_pixel_sizes,
                                                      all_image_types)
 
-        dataset_entries.append((preprocessed_images, id_vas_dict[patient_dir]))
+        dataset_entries.append((preprocessed_images, id_vas_dict[patient_dir[-5:]]))
 
     return dataset_entries
 
@@ -172,21 +271,13 @@ def custom_collate(batch):
 if not processed:
     # Generate the dataset and save it
     if not os.path.exists(processed_dataset_path):
-        dataset_entries = preprocess_and_zip_all_images(image_directory, raw_PROC_id_dict)
-        torch.save(dataset_entries, processed_dataset_path)
+        os.mkdir(processed_dataset_path)
+    dataset_entries = preprocess_and_zip_all_images(image_directory, id_vas_dict)
+    torch.save(dataset_entries, processed_dataset_path)
 
-
-
-# Define your augmentations
-data_transforms = transforms.Compose([
-    transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10),
-    # Assuming images are PIL images; if not, you'll need to adjust or implement suitable transformations
-    transforms.RandomCrop(size=(10 * 64, 8 * 64), padding=4),
-    # Add any other desired transforms here
-])
 
 class MammogramDataset(Dataset):
-    def __init__(self, dataset_path, transform=None, n=2, weights=None, rand_select=True):
+    def __init__(self, dataset_path, transform=None, n=8, weights=None, rand_select=True):
         self.dataset = torch.load(dataset_path)
         self.transform = transform
         self.n = n
@@ -229,10 +320,23 @@ num_test = len(dataset) - num_train - num_val
 
 train_dataset, val_dataset, test_dataset = random_split(dataset, [num_train, num_val, num_test])
 
+if transformed:
+    # Define your augmentations
+    data_transforms = transforms.Compose([
+        transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10),
+        # Assuming images are PIL images; if not, you'll need to adjust or implement suitable transformations
+        transforms.RandomCrop(size=(10 * 64, 8 * 64), padding=4),
+        # Add any other desired transforms here
+    ])
+else:
+    data_transforms = None
+
 # Compute weights for the training set
-targets = [label for _, label in train_dataset.dataset.dataset]
-sample_weights = compute_sample_weights(targets)
-# sample_weights = None
+if weighted:
+    targets = [label for _, label in train_dataset.dataset.dataset]
+    sample_weights = compute_sample_weights(targets)
+else:
+    sample_weights = None
 
 # Applying the transform only to the training dataset
 train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=data_transforms, weights=sample_weights)
@@ -247,7 +351,7 @@ mean, std = compute_target_statistics(train_dataset)
 
 # Create DataLoaders
 print("Creating DataLoaders")
-batch_size = 16
+# batch_size = 16
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate)
@@ -265,8 +369,10 @@ if __name__ == "__main__":
     lr = 1
     momentum = 0.9
     # optimizer = optim.Adam(model.parameters(), lr=lr)
-    # optimizer = DAdaptAdam(model.parameters())
-    optimizer = DAdaptSGD(model.parameters())
+    if op_choice == 'adam':
+        optimizer = DAdaptAdam(model.parameters())
+    elif op_choice == 'sgd':
+        optimizer = DAdaptSGD(model.parameters())
     # optimizer = optim.SGD(model.parameters(),
     #                          lr=lr, momentum=momentum)
 
@@ -274,7 +380,7 @@ if __name__ == "__main__":
 
     # Training parameters
     num_epochs = 600
-    patience = 600
+    patience = 150
     not_improved = 0
     best_val_loss = float('inf')
     best_test_loss = float('inf')
@@ -290,6 +396,8 @@ if __name__ == "__main__":
         scaled_train_loss = 0.0
         for inputs, targets, weights in train_loader:  # Simplified unpacking
             inputs, targets, weights = inputs.cuda(), targets.cuda(), weights.cuda()  # Send data to GPU
+            if torch.sum(torch.isnan(inputs)) > 0:
+                print("Image be fucked")
 
             # Zero the parameter gradients
             optimizer.zero_grad()
