@@ -17,7 +17,14 @@ from torchvision import transforms
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from skimage import filters
-from training.models import *
+
+on_CSF = True
+if on_CSF:
+    training_path = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, training_path)
+    from models import *
+else:
+    from training.models import *
 
 # time.sleep(60*60*14)
 print(time.localtime())
@@ -38,7 +45,6 @@ def extract_identifier(filename):
 
 print("Reading data")
 
-on_CSF = True
 
 if on_CSF:
     '''
