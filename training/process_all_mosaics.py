@@ -63,9 +63,9 @@ if on_CSF:
                             'transformed': trans_choice
                         })
 
-    config = int(sys.argv[1])
+    config = int(sys.argv[1]) + 1
     processed = True
-    dataset_dir = ''
+    dataset_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/'
     config = configurations[config]
     processed_dataset_path = os.path.join(dataset_dir,
                                           'mosaics_processed/full_mosaic_dataset_{}.pth'.format(config['dataset']))
@@ -74,8 +74,10 @@ if on_CSF:
     weighted = config['weighted']
     transformed = config['transformed']
 
-    results_dir = ''
+    results_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/training/results'
     best_model_name = '{}_{}_{}_t{}_w{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted)
+
+    print("Config", int(sys.argv[1]) + 1, "creates test", best_model_name)
 else:
     processed = True
     batch_size = 16
