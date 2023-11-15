@@ -1,3 +1,4 @@
+print("Starting imports")
 import torch
 from dadaptation import DAdaptAdam, DAdaptSGD
 import sys
@@ -20,6 +21,7 @@ from skimage import filters
 
 on_CSF = True
 if on_CSF:
+    print("Running on the CSF")
     training_path = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, training_path)
     from models import *
@@ -43,8 +45,6 @@ def extract_identifier(filename):
     match = re.search(r'-([\d]+)-[A-Z]+', filename)
     return match.group(1) if match else None
 
-print("Reading data")
-
 
 if on_CSF:
     '''
@@ -57,7 +57,7 @@ if on_CSF:
     '''
     configurations = []
     for d_set in ['proc', 'log', 'histo', 'clahe']:
-        for b_size in [32, 64, 128]:
+        for b_size in [8, 16]:
             for op_choice in ['adam', 'sgd']:
                 for weight_choice in [True, False]:
                     for trans_choice in [True, False]:
@@ -69,7 +69,7 @@ if on_CSF:
                             'transformed': trans_choice
                         })
 
-    config = int(sys.argv[1]) + 1
+    config = int(sys.argv[1]) - 1
     processed = True
     dataset_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/'
     config = configurations[config]
@@ -81,7 +81,7 @@ if on_CSF:
     transformed = config['transformed']
 
     results_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/training/results'
-    best_model_name = '{}_{}_{}_t{}_w{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted)
+    best_model_name = '{}_{}_{}_t{}_w{}_js{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted, int(sys.argv[1]) - 1)
 
     print("Config", int(sys.argv[1]) + 1, "creates test", best_model_name)
 else:
@@ -276,13 +276,6 @@ def custom_collate(batch):
     # else:
     #     return images_tensor, labels_tensor, weights
 
-if not processed:
-    # Generate the dataset and save it
-    if not os.path.exists(processed_dataset_path):
-        os.mkdir(processed_dataset_path)
-    dataset_entries = preprocess_and_zip_all_images(image_directory, id_vas_dict)
-    torch.save(dataset_entries, processed_dataset_path)
-
 
 class MammogramDataset(Dataset):
     def __init__(self, dataset_path, transform=None, n=8, weights=None, rand_select=True):
@@ -315,6 +308,15 @@ class MammogramDataset(Dataset):
             return image, label, self.weights[idx]
         else:
             return image, label, 1
+
+
+if not processed:
+    print("Processing data")
+    # Generate the dataset and save it
+    if not os.path.exists(processed_dataset_path):
+        os.mkdir(processed_dataset_path)
+    dataset_entries = preprocess_and_zip_all_images(image_directory, id_vas_dict)
+    torch.save(dataset_entries, processed_dataset_path)
 
 # Load dataset from saved path
 print("Creating Dataset")
