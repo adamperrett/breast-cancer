@@ -181,12 +181,16 @@ def plot_scatter(true_values, pred_values, title, save_location=None):
                     format='png')
     plt.show()
 
-def plot_error_vs_vas(true_values, pred_values, title, save_location=None):
+def plot_error_vs_vas(true_values, pred_values, title, save_location=None, min_e=-40, max_e=40):
     plt.figure(figsize=(10, 6))
     errors = np.array(true_values) - np.array(pred_values)
     plt.scatter(true_values, errors, alpha=0.5)
     plt.xlabel('VAS')
     plt.ylabel('Error')
+    plt.ylim([min_e, max_e])
+    if np.sum([e < min_e or e > max_e for e in errors]):
+        print("An error was out of bounds")
+        print("Max:", np.max(errors), "Min:", np.min(errors))
     plt.title(title)
     if save_location:
         plt.savefig(save_location+"/{}.png".format(title), bbox_inches='tight',

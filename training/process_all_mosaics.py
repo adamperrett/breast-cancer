@@ -56,20 +56,22 @@ if on_CSF:
     -transformed 2
     '''
     configurations = []
-    for d_set in ['proc', 'log', 'histo', 'clahe']:
-        for b_size in [8, 16]:
+    for n_im in [8, 4, 2, 1]:
+        for b_size in [128, 64, 32, 24, 16, 8]:
             for op_choice in ['adam', 'sgd']:
-                for weight_choice in [True, False]:
-                    for trans_choice in [True, False]:
-                        configurations.append({
-                            'dataset': d_set,
-                            'batch_size': b_size,
-                            'optimizer': op_choice,
-                            'weighted': weight_choice,
-                            'transformed': trans_choice
-                        })
-
+                for d_set in ['proc', 'log', 'histo', 'clahe']:
+                    for weight_choice in [True, False]:
+                        for trans_choice in [True, False]:
+                            configurations.append({
+                                'dataset': d_set,
+                                'batch_size': b_size,
+                                'optimizer': op_choice,
+                                'weighted': weight_choice,
+                                'transformed': trans_choice,
+                                'n_images': n_im
+                            })
     config = int(sys.argv[1]) - 1
+
     processed = True
     dataset_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/'
     config = configurations[config]
@@ -79,6 +81,7 @@ if on_CSF:
     op_choice = config['optimizer']
     weighted = config['weighted']
     transformed = config['transformed']
+    n_images = config['n_im']
 
     working_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/training/'
     best_model_name = '{}_{}_{}_t{}_w{}_js{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted, int(sys.argv[1]))
@@ -86,20 +89,26 @@ if on_CSF:
     print("Config", int(sys.argv[1]) + 1, "creates test", best_model_name)
 else:
     processed = True
+
     batch_size = 16
     op_choice = 'adam'
     weighted = False
-    transformed = True
+    transformed = False
+    n_images = 2
+
     image_directory = 'D:/mosaic_data/raw'
     csv_directory = 'C:/Users/adam_/PycharmProjects/breast-cancer/data'
     csv_name = 'full_procas_info3.csv'
     reference_csv = 'PROCAS_reference.csv'
 
-    # processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_proc.pth')
-    processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_log.pth')
+    keyword = 'testing_prints'
+    dataset = 'proc'
+
+    processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_{}.pth'.format(dataset))
+    # processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_log.pth')
 
     working_dir = 'C:/Users/adam_/PycharmProjects/breast-cancer/training/'
-    best_model_name = 'log_adam_rand_two_ResnetTransformer'
+    best_model_name = '{}_{}_{}_{}_t{}_w{}'.format(keyword, dataset, op_choice, batch_size, transformed, weighted)
 
 
 
@@ -320,7 +329,8 @@ if not processed:
 
 # Load dataset from saved path
 print("Creating Dataset")
-dataset = MammogramDataset(processed_dataset_path)
+dataset = MammogramDataset(processed_dataset_path,
+                           n=n_images)
 
 # Splitting the dataset
 train_ratio, val_ratio = 0.7, 0.2
@@ -349,7 +359,10 @@ else:
     sample_weights = None
 
 # Applying the transform only to the training dataset
-train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=data_transforms, weights=sample_weights)
+train_dataset.dataset = MammogramDataset(processed_dataset_path,
+                                         transform=data_transforms,
+                                         weights=sample_weights,
+                                         n=n_images)
 
 mean, std = compute_target_statistics(train_dataset)
 
@@ -392,8 +405,15 @@ if __name__ == "__main__":
     num_epochs = 600
     patience = 150
     not_improved = 0
+    not_improved_r2 = 0
     best_val_loss = float('inf')
     best_test_loss = float('inf')
+    best_val_l_r2 = -float('inf')
+    best_test_l_r2 = -float('inf')
+    best_val_r_loss = float('inf')
+    best_test_r_loss = float('inf')
+    best_val_r2 = -float('inf')
+    best_test_r2 = -float('inf')
     # scheduler = ReduceLROnPlateau(optimizer, 'min', patience=int(patience/10), factor=0.9, verbose=True)
     writer = SummaryWriter(working_dir+'/results/tb_'+best_model_name)
 
@@ -438,40 +458,67 @@ if __name__ == "__main__":
         # Validation
         val_loss, val_labels, val_preds, val_r2 = evaluate_model(model, val_loader, criterion,
                                                                  inverse_standardize_targets, mean, std)
-        val_test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
+        test_loss, test_labels, test_preds, test_r2 = evaluate_model(model, test_loader, criterion,
                                                                      inverse_standardize_targets, mean, std)
         print(f"Epoch {epoch + 1}/{num_epochs}, "
-              f"\nTrain Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, Test loss: {val_test_loss:.4f}"
+              f"\nTrain Loss: {scaled_train_loss:.4f}, Val Loss: {val_loss:.4f}, Test loss: {test_loss:.4f}"
               f"\nTrain R2: {train_r2:.4f}, Val R2: {val_r2:.4f}, Test R2: {test_r2:.4f}")
 
         writer.add_scalar('Loss/Train', scaled_train_loss, epoch)
         writer.add_scalar('R2/Train', train_r2, epoch)
         writer.add_scalar('Loss/Validation', val_loss, epoch)
         writer.add_scalar('R2/Validation', val_r2, epoch)
-        writer.add_scalar('Loss/Test', val_test_loss, epoch)
+        writer.add_scalar('Loss/Test', test_loss, epoch)
         writer.add_scalar('R2/Test', test_r2, epoch)
 
+        if val_r2 > best_val_r2:
+            best_val_r2 = val_r2
+            best_test_r2 = test_r2
+            best_val_r_loss = val_loss
+            best_test_r_loss = test_loss
+            not_improved_r2 = 0
+            print("Validation R2 improved. Saving best_model.")
+            torch.save(model.state_dict(), working_dir+'/models/r_'+best_model_name)
+        else:
+            not_improved_r2 += 1
         # Check early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_test_loss = test_loss
+            best_val_l_r2 = val_r2
+            best_test_l_r2 = test_r2
             not_improved = 0
             print("Validation loss improved. Saving best_model.")
-            best_test_loss = val_test_loss
-            print(f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} had test loss {best_test_loss:.4f}")
-            torch.save(model.state_dict(), working_dir+'/models/'+best_model_name)
+            print(f"From best val loss at epoch {epoch - not_improved}:\n "
+                  f"val loss: {best_val_loss:.4f} test loss {best_test_loss:.4f} val r2: {best_val_l_r2:.4f} test r2 {best_test_l_r2:.4f}")
+            print(f"From best val R2 at epoch {epoch - not_improved_r2}:\n "
+                  f"val loss: {best_val_r_loss:.4f} test loss {best_test_r_loss:.4f} val r2: {best_val_r2:.4f} test r2 {best_test_r2:.4f}")
+            torch.save(model.state_dict(), working_dir+'/models/l_'+best_model_name)
         else:
             not_improved += 1
-            print(f"Best val: {best_val_loss:.4f} at epoch {epoch - not_improved} had test loss {best_test_loss:.4f}")
+            print(f"From best val loss at epoch {epoch - not_improved}:\n "
+                  f"val loss: {best_val_loss:.4f} test loss {best_test_loss:.4f} val r2: {best_val_l_r2:.4f} test r2 {best_test_l_r2:.4f}")
+            print(f"From best val R2 at epoch {epoch - not_improved_r2}:\n "
+                  f"val loss: {best_val_r_loss:.4f} test loss {best_test_r_loss:.4f} val r2: {best_val_r2:.4f} test r2 {best_test_r2:.4f}")
             if not_improved >= patience:
                 print("Early stopping")
                 break
+
+        writer.add_scalar('Loss/Best Validation Loss from Loss', best_val_loss, epoch)
+        writer.add_scalar('Loss/Best Validation Loss from R2', best_val_r_loss, epoch)
+        writer.add_scalar('R2/Best Validation R2 from R2', best_val_r2, epoch)
+        writer.add_scalar('R2/Best Validation R2 from Loss', best_val_l_r2, epoch)
+        writer.add_scalar('Loss/Best Test Loss from Loss', best_test_loss, epoch)
+        writer.add_scalar('Loss/Best Test Loss from R2', best_test_r_loss, epoch)
+        writer.add_scalar('R2/Best Test R2 from R2', best_test_r2, epoch)
+        writer.add_scalar('R2/Best Test R2 from Loss', best_test_l_r2, epoch)
 
         # scheduler.step(val_loss)
 
 
     writer.close()
     print("Loading best model weights!")
-    model.load_state_dict(torch.load(working_dir+'/models/'+best_model_name))
+    model.load_state_dict(torch.load(working_dir+'/models/l_'+best_model_name))
 
     train_dataset.dataset = MammogramDataset(processed_dataset_path, transform=None)
 

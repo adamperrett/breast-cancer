@@ -21,7 +21,8 @@ from training.process_all_mosaics import train_loader, val_loader, test_loader, 
 model_dir = 'C:/Users/adam_/PycharmProjects/breast-cancer/training/models/'
 # model_name = 'clahe_rand_two_ResnetTransformer'
 # model_name = 'histo_rand_two_ResnetTransformer'
-model_name = 'log_rand_two_ResnetTransformer'
+# model_name = 'log_rand_two_ResnetTransformer'
+model_name = 'proc_rand_two_ResnetTransformer'
 # model_name = 'clahe_weighted_rand_two_ResnetTransformer'
 
 save_dir = 'D:/mosaic_data/results/'+model_name+'/'
