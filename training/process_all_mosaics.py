@@ -49,8 +49,9 @@ def extract_identifier(filename):
 if on_CSF:
     '''
     Test across:
+    -n images 4
     -dataset 4
-    -batch_size n
+    -batch_size 6
     -optimiser 2
     -weights 2
     -transformed 2
@@ -84,7 +85,7 @@ if on_CSF:
     n_images = config['n_im']
 
     working_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/training/'
-    best_model_name = '{}_{}_{}_t{}_w{}_js{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted, int(sys.argv[1]))
+    best_model_name = 'b2f_{}_{}_{}_t{}_w{}_js{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted, int(sys.argv[1]))
 
     print("Config", int(sys.argv[1]) + 1, "creates test", best_model_name)
 else:
