@@ -85,7 +85,8 @@ if on_CSF:
     n_images = config['n_images']
 
     working_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/training/'
-    best_model_name = 'b2f_{}_{}_{}_t{}_w{}_js{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted, int(sys.argv[1]))
+    best_model_name = 'b2f_{}_{}x{}_{}_t{}_w{}_js{}'.format(
+        config['dataset'], op_choice, batch_size, n_images, transformed, weighted, int(sys.argv[1]))
 
     print("Config", int(sys.argv[1]) + 1, "creates test", best_model_name)
 else:
@@ -109,7 +110,8 @@ else:
     # processed_dataset_path = os.path.join(csv_directory, 'mosaics_processed/full_mosaic_dataset_log.pth')
 
     working_dir = 'C:/Users/adam_/PycharmProjects/breast-cancer/training/'
-    best_model_name = '{}_{}_{}_{}_t{}_w{}'.format(keyword, dataset, op_choice, batch_size, transformed, weighted)
+    best_model_name = '{}_{}_{}_{}x{}_t{}_w{}'.format(
+        keyword, dataset, op_choice, batch_size, n_images, transformed, weighted)
 
 
 
