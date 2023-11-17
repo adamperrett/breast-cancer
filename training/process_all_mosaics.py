@@ -82,7 +82,7 @@ if on_CSF:
     op_choice = config['optimizer']
     weighted = config['weighted']
     transformed = config['transformed']
-    n_images = config['n_im']
+    n_images = config['n_images']
 
     working_dir = '/mnt/iusers01/gb01/mbaxrap7/scratch/breast-cancer/training/'
     best_model_name = 'b2f_{}_{}_{}_t{}_w{}_js{}'.format(config['dataset'], op_choice, batch_size, transformed, weighted, int(sys.argv[1]))
